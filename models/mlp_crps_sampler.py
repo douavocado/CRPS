@@ -8,7 +8,7 @@ class MLPSampler(nn.Module):
     Multi-layer Perceptron that generates random samples for probabilistic predictions.
     Uses the EpsilonSampler from torchnaut to enable sample-based predictions.
     """
-    def __init__(self, input_size=1, hidden_size=64, latent_dim=16, n_layers=2, dropout_rate=0.1):
+    def __init__(self, input_size=1, hidden_size=64, latent_dim=16, n_layers=2, dropout_rate=0.0, output_size=1):
         super(MLPSampler, self).__init__()
         
         # Network architecture
@@ -22,22 +22,21 @@ class MLPSampler(nn.Module):
         layers.append(nn.Linear(input_size, hidden_size))
         layers.append(nn.ReLU())
         layers.append(nn.Dropout(dropout_rate))
+        # add randomisation early on for non-linear modelling of noise
+        layers.append(EpsilonSampler(latent_dim))
+        layers.append(nn.Linear(hidden_size + latent_dim, hidden_size))
+        layers.append(nn.ReLU())
+        layers.append(nn.Dropout(dropout_rate))
         
         # Additional hidden layers
-        for _ in range(n_layers - 1):
+        for _ in range(min(n_layers - 2, 0)):
             layers.append(nn.Linear(hidden_size, hidden_size))
             layers.append(nn.ReLU())
             layers.append(nn.Dropout(dropout_rate))
         
         # Final layer that outputs features to be combined with random samples
         self.feature_extractor = nn.Sequential(*layers)
-        self.output_layer = nn.Linear(hidden_size, hidden_size)
-        
-        # Epsilon sampler for adding random dimensions
-        self.sampler = EpsilonSampler(latent_dim)
-        
-        # Final prediction layer that combines extracted features with random samples
-        self.prediction_layer = nn.Linear(hidden_size + latent_dim, 1)
+        self.output_layer = nn.Linear(hidden_size, output_size)
         
     def forward(self, x, n_samples=None):
         """
@@ -52,14 +51,7 @@ class MLPSampler(nn.Module):
         """
         # Extract features
         features = self.feature_extractor(x)
-        features = self.output_layer(features)
-        
-        # Add random samples using epsilon sampler
-        augmented = self.sampler(features, n_samples=n_samples)
-        
-        # Generate predictions from the combined features and random samples
-        # Shape: [batch_size, n_samples, 1]
-        predictions = self.prediction_layer(augmented)
+        predictions = self.output_layer(features)
         
         # Remove the last dimension to get [batch_size, n_samples]
         return predictions.squeeze(-1)
