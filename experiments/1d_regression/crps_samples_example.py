@@ -8,138 +8,17 @@ from sklearn.model_selection import train_test_split
 from torchnaut.crps import EpsilonSampler
 import scipy.special as special
 
+
+
 # Add the project root to the path
 import sys
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../..')))
 
 # Import our model
 from models.mlp_crps_sampler import MLPSampler
+from experiments.data.generate import generate_toy_data_1d
 
-def generate_toy_data(n_samples=500, noise_type='gaussian', mean_function='gaussian_rbf', **kwargs):
-    """Generate a toy 1D regression dataset with heteroscedastic noise"""
-    # Generate inputs between -3 and 3
-    x = np.random.uniform(-3, 3, n_samples)
-    # sort x
-    x = np.sort(x)
-    
-    base_noise_scale = np.random.uniform(0.05, 0.5)
-    # generate noise from non-gaussian distributions
-    if noise_type == 'gaussian':
-        noise = np.random.normal(size=n_samples) * base_noise_scale
-        noise_args = {'base_noise_scale': base_noise_scale}
-    elif noise_type == 'student_t':
-        df = np.random.uniform(1, 10)
-        noise = np.random.standard_t(df=df, size=n_samples) * base_noise_scale
-        noise_args = {'df': df,
-                      'base_noise_scale': base_noise_scale}
-    elif noise_type == 'cauchy':
-        noise = np.random.standard_cauchy(size=n_samples) * base_noise_scale
-        noise_args = {'base_noise_scale': base_noise_scale}
-    elif noise_type == 'uniform':
-        noise = np.random.uniform(0, 1, size=n_samples) * base_noise_scale
-        noise_args = {'base_noise_scale': base_noise_scale}
-    elif noise_type == 'exponential':
-        if 'scale' in kwargs:
-            scale = kwargs['scale']
-        else:
-            scale = 1
-        noise = np.random.exponential(scale=scale, size=n_samples) * base_noise_scale
-        noise_args = {'scale': scale,
-                      'base_noise_scale': base_noise_scale}
-    elif noise_type == 'poisson':
-        if 'scale' in kwargs:
-            scale = kwargs['scale']
-        else:
-            scale = 1
-        noise = np.random.poisson(lam=scale, size=n_samples) * base_noise_scale
-        noise_args = {'scale': scale,
-                      'base_noise_scale': base_noise_scale}
-    elif noise_type == 'gamma':
-        if 'scale' in kwargs:
-            scale = kwargs['scale']
-        else:
-            scale = 1
-        if 'shape' in kwargs:
-            shape = kwargs['shape']
-        else:
-            shape = 1
-        noise = np.random.gamma(shape=shape, scale=scale, size=n_samples) * base_noise_scale
-        noise_args = {'scale': scale,
-                      'shape': shape,
-                      'base_noise_scale': base_noise_scale}
-    elif noise_type == 'lognormal':
-        if 'mean' in kwargs:
-            mean = kwargs['mean']
-        else:
-            mean = 0
-        if 'scale' in kwargs:
-            scale = kwargs['scale']
-        else:
-            scale = 1
-        noise = np.random.lognormal(mean=mean, sigma=scale, size=n_samples) * base_noise_scale
-        noise_args = {'mean': mean,
-                      'scale': scale,
-                      'base_noise_scale': base_noise_scale}
-    else:
-        raise ValueError(f"Invalid noise type: {noise_type}")
-    
-    if mean_function == 'sin':
-        scale = np.random.uniform(0.5, 1.5)
-        frequency = np.random.uniform(0.5, 2.0)
-        phase = np.random.uniform(0, 2 * np.pi)
-        mean = scale * np.sin(frequency * x + phase)
-    elif mean_function == 'linear':
-        slope = np.random.uniform(-0.5, 0.5)
-        intercept = np.random.uniform(-1, 1)
-        mean = slope * x + intercept
-    elif mean_function == 'gaussian_rbf':
-        # draw from gaussian process with squared exponential kernel
-        amplitude = np.random.uniform(0.5, 1.5)
-        lengthscale = np.random.uniform(0.5, 2.0)
-        # Set mean function to 0
-        mean_f = np.zeros_like(x)
-        # Compute covariance matrix with squared exponential kernel
-        cov = amplitude * np.exp(-0.5 * (x[:, None] - x[None, :])**2 / lengthscale**2)
-        # Sample from the Gaussian process with mean 0
-        mean = np.random.multivariate_normal(mean_f, cov)
-    else:
-        # Default to sin if not specified
-        scale = 1.0
-        frequency = 1.0
-        phase = 0
-        mean = scale * np.sin(frequency * x + phase)
-    
-    y = mean + noise
-    
-    # Create indices for train-test split while preserving order
-    indices = np.arange(n_samples)
-    train_indices, test_indices = train_test_split(indices, test_size=0.2, random_state=42)
-    
-    # Use the indices to split the data, preserving the original order within each split
-    x_train, x_test = x[train_indices], x[test_indices]
-    y_train, y_test = y[train_indices], y[test_indices]
-    mean_train, mean_test = mean[train_indices], mean[test_indices]
-    
-    # Sort the train and test sets by x values to maintain order
-    train_sort_idx = np.argsort(x_train)
-    test_sort_idx = np.argsort(x_test)
-    
-    x_train = x_train[train_sort_idx]
-    y_train = y_train[train_sort_idx]
-    mean_train = mean_train[train_sort_idx]
-    
-    x_test = x_test[test_sort_idx]
-    y_test = y_test[test_sort_idx]
-    mean_test = mean_test[test_sort_idx]
-    
-    # Convert to PyTorch tensors
-    x_train_tensor = torch.FloatTensor(x_train).view(-1, 1)
-    y_train_tensor = torch.FloatTensor(y_train).view(-1, 1)
-    x_test_tensor = torch.FloatTensor(x_test).view(-1, 1)
-    y_test_tensor = torch.FloatTensor(y_test).view(-1, 1)
-    
-    return (x_train_tensor, y_train_tensor, x_test_tensor, y_test_tensor, 
-            x_train, y_train, x_test, y_test, noise_args, mean_train, mean_test)
+
 
 def train_model(model, x_train, y_train, x_test, y_test, 
                 epochs=500, lr=0.001, batch_size=64, n_samples=100):
@@ -187,7 +66,7 @@ def train_model(model, x_train, y_train, x_test, y_test,
         scheduler.step(test_loss)
         
         # Print progress
-        if (epoch + 1) % 50 == 0:
+        if (epoch + 1) % 10 == 0:
             print(f'Epoch {epoch+1}/{epochs}, Train Loss: {avg_train_loss:.4f}, Test Loss: {test_loss:.4f}')
     
     return train_losses, test_losses
@@ -229,7 +108,16 @@ def plot_results(model, x_train, y_train, x_test, y_test, mean_train, mean_test,
     plt.figure(figsize=(12, 8))
     
     # Plot training data
-    plt.scatter(x_train_np, y_train_np, color='blue', alpha=0.5, label='Training Data')
+    # if training data is too much, sample random 500 points to plot
+    if x_train_np.shape[0] > 500:
+        random_indices = np.random.choice(x_train_np.shape[0], size=500, replace=False)
+        plot_x_train_np = x_train_np[random_indices]
+        plot_y_train_np = y_train_np[random_indices]
+    else:
+        plot_x_train_np = x_train_np
+        plot_y_train_np = y_train_np
+    
+    plt.scatter(plot_x_train_np, plot_y_train_np, color='blue', alpha=0.5, label='Training Data')
     
     # Calculate true 90% prediction intervals based on noise type
     base_noise_scale = noise_args['base_noise_scale']
@@ -314,7 +202,7 @@ def plot_results(model, x_train, y_train, x_test, y_test, mean_train, mean_test,
         # Scale by base_noise_scale and add to mean
         true_upper = mean_train + upper_quantile * base_noise_scale
         true_lower = mean_train + lower_quantile * base_noise_scale
-        mean_noise = np.exp(mean_param) * (np.exp(scale_param**2/2))
+        mean_noise = base_noise_scale * np.exp(mean_param) * (np.exp(scale_param**2/2))
     else:
         raise ValueError(f"Invalid noise type: {noise_type}")
 
@@ -363,10 +251,10 @@ if __name__ == "__main__":
     torch.manual_seed(42)
     np.random.seed(42)
     
-    noise_type = 'lognormal'
+    noise_type = 'exponential'
 
     # Generate toy data
-    data = generate_toy_data(n_samples=500, noise_type=noise_type, mean_function='gaussian_rbf')
+    data = generate_toy_data_1d(n_samples=2000, noise_type=noise_type, mean_function='gaussian_rbf')
     x_train, y_train, x_test, y_test, x_train_np, y_train_np, x_test_np, y_test_np, noise_args, mean_train, mean_test = data
     
     print(f"Generated dataset with {x_train.shape[0]} training samples and {x_test.shape[0]} test samples")
@@ -375,7 +263,7 @@ if __name__ == "__main__":
     # Create and train the model
     model = MLPSampler(input_size=1, hidden_size=64, latent_dim=16, n_layers=5, dropout_rate=0.1)
     train_losses, test_losses = train_model(model, x_train, y_train, x_test, y_test, 
-                                           epochs=500, lr=0.001, batch_size=64, n_samples=100)
+                                           epochs=50, lr=0.001, batch_size=64, n_samples=100)
     
     # Plot and save results
     plot_results(model, x_train, y_train, x_test, y_test, mean_train, mean_test, noise_type, noise_args, n_samples=500)

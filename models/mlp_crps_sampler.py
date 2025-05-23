@@ -1,7 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torchnaut.crps import EpsilonSampler, crps_loss
+from torchnaut.crps import EpsilonSampler, crps_loss, crps_loss_mv
+from torchnaut import crps
 
 class MLPSampler(nn.Module):
     """
@@ -15,6 +16,7 @@ class MLPSampler(nn.Module):
         self.input_size = input_size
         self.hidden_size = hidden_size
         self.latent_dim = latent_dim
+        self.output_size = output_size
         
         # Create layers
         layers = []
@@ -50,34 +52,33 @@ class MLPSampler(nn.Module):
             samples: Predicted samples of shape [batch_size, n_samples]
         """
         # Extract features
-        features = self.feature_extractor(x)
-        predictions = self.output_layer(features)
+        with crps.EpsilonSampler.n_samples(n_samples): # Override the default number of n_samples.
+            features = self.feature_extractor(x)
+            predictions = self.output_layer(features)
         
-        # Remove the last dimension to get [batch_size, n_samples]
-        return predictions.squeeze(-1)
+        return predictions # shape [batch_size, n_samples, output_size]
     
     def crps_loss(self, x, y, n_samples=None):
         """
-        Compute CRPS loss using the torchnaut implementation
+        Compute CRPS loss using the torchnaut implementation. If the output_size is greater than 1, the loss is computed for each output dimension and then averaged.
         
         Args:
             x: Input tensor of shape [batch_size, input_size]
-            y: Target tensor of shape [batch_size, 1]
+            y: Target tensor of shape [batch_size, output_size]
             n_samples: Number of samples to generate (optional)
             
         Returns:
-            loss: Scalar CRPS loss (mean across batch)
+            loss: Scalar CRPS loss (mean across batch, and across output_size)
         """
         # Generate samples
-        samples = self.forward(x, n_samples=n_samples)
+        samples = self.forward(x, n_samples=n_samples) # shape [batch_size, n_samples, output_size]
         
-        # Compute CRPS loss using torchnaut
-        # Ensure y is properly shaped [batch_size, 1]
-        if y.dim() == 1:
-            y = y.unsqueeze(1)
-        
-        # Get per-sample losses
-        per_sample_loss = crps_loss(samples, y)
+        # Compute CRPS loss using torchnaut        
+        # Get per-sample losses, if output_size > 1, the loss is computed for each output dimension and then averaged
+        if self.output_size > 1:
+            per_sample_loss = crps_loss_mv(samples, y)
+        else:
+            per_sample_loss = crps_loss(samples.squeeze(-1), y)
         
         # Return mean loss (scalar)
         return per_sample_loss.mean() 
