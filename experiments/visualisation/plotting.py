@@ -3,6 +3,7 @@ import matplotlib.pyplot as plt
 import torch
 from scipy.stats import multivariate_normal, norm
 import matplotlib.gridspec as gridspec
+from experiments.data.kernels import evaluate_gp_mean
 
 def predict_samples(model, x, n_samples=100, device='cpu'):
     """
@@ -52,10 +53,14 @@ def plot_prediction_samples(x_test, y_test, model, n_samples=100, n_points=5, de
     device : str
         Device to use for prediction ('cpu' or 'cuda')
     noise_args : dict, optional
-        Dictionary containing noise parameters from generate_toy_data_multidim
-        - cov_matrix: covariance matrix of the noise
-        - A: transformation matrix
-        - dependent_noise: whether noise is dependent across dimensions
+        Dictionary containing noise parameters from generate_toy_data_multidim:
+        - cov_matrix: Covariance matrix of the noise
+        - gp_functions: List of GP function information dictionaries, each containing:
+            - x_train: Training inputs used for GP
+            - f_train: Function values at training points
+            - kernel_type: Type of kernel ('rbf', 'matern', 'linear')
+            - kernel_params: Kernel parameters
+        - dependent_noise: Whether noise is dependent across dimensions
         
     Returns:
     --------
@@ -80,9 +85,14 @@ def plot_prediction_samples(x_test, y_test, model, n_samples=100, n_points=5, de
     
     # Calculate true means if noise_args is provided
     true_means = None
-    if noise_args is not None and 'A' in noise_args:
-        A = noise_args['A']
-        true_means = np.dot(x_subset_np, A)
+    if noise_args is not None and 'gp_functions' in noise_args:
+        gp_functions = noise_args['gp_functions']
+        y_dim = len(gp_functions)
+        true_means = np.zeros((len(x_subset_np), y_dim))
+        
+        # Evaluate each GP function at the new points
+        for j, gp_func in enumerate(gp_functions):
+            true_means[:, j] = evaluate_gp_mean(x_subset_np, gp_func)
     
     # For outputs with more than 2 dimensions, randomly select 2 dimensions to visualize
     dims_to_plot = list(range(output_dim))

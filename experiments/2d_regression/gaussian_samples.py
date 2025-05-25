@@ -4,7 +4,6 @@ import torch.nn as nn
 import torch.optim as optim
 import numpy as np
 import matplotlib.pyplot as plt
-from torchnaut.crps import EpsilonSampler
 import scipy.special as special
 from sklearn.model_selection import train_test_split
 
@@ -26,8 +25,8 @@ from experiments.training.train_functions import (
 from experiments.visualisation.plotting import plot_training_history, plot_prediction_samples
 
 # Set random seed for reproducibility
-torch.manual_seed(41)
-np.random.seed(41)
+torch.manual_seed(1)
+np.random.seed(1)
 
 # Specify input and output dimensions
 x_dim = 2
@@ -53,10 +52,11 @@ batch_size = 64
 train_loader, val_loader = prepare_data_loaders(x_train, y_train, x_val, y_val, batch_size=batch_size)
 
 # Define model parameters
-hidden_size = 64
-latent_dim = 16
-n_layers = 3
+hidden_size = 8
+latent_dim = 2
+n_layers = 1
 dropout_rate = 0.1
+sample_layer_index = 0
 
 # Create model
 model = MLPSampler(
@@ -65,13 +65,14 @@ model = MLPSampler(
     latent_dim=latent_dim,
     n_layers=n_layers,
     dropout_rate=dropout_rate,
-    output_size=y_dim
+    output_size=y_dim,
+    sample_layer_index=sample_layer_index
 )
 
 # Training parameters
 n_epochs = 100
 patience = 10
-train_n_samples = 100
+train_n_samples = 10
 n_samples = 1000
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
 save_path = os.path.join(os.path.dirname(__file__), 'saved_models', 'mlp_sampler.pt')

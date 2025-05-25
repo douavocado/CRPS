@@ -9,7 +9,7 @@ class MLPSampler(nn.Module):
     Multi-layer Perceptron that generates random samples for probabilistic predictions.
     Uses the EpsilonSampler from torchnaut to enable sample-based predictions.
     """
-    def __init__(self, input_size=1, hidden_size=64, latent_dim=16, n_layers=2, dropout_rate=0.0, output_size=1):
+    def __init__(self, input_size=1, hidden_size=64, latent_dim=16, n_layers=2, dropout_rate=0.0, output_size=1, sample_layer_index=1):
         super(MLPSampler, self).__init__()
         
         # Network architecture
@@ -24,6 +24,12 @@ class MLPSampler(nn.Module):
         layers.append(nn.Linear(input_size, hidden_size))
         layers.append(nn.ReLU())
         layers.append(nn.Dropout(dropout_rate))
+        # Adding first layers before randomisation layer
+        for _ in range(sample_layer_index - 1):
+            layers.append(nn.Linear(hidden_size, hidden_size))
+            layers.append(nn.ReLU())
+            layers.append(nn.Dropout(dropout_rate))
+        
         # add randomisation early on for non-linear modelling of noise
         layers.append(EpsilonSampler(latent_dim))
         layers.append(nn.Linear(hidden_size + latent_dim, hidden_size))
@@ -31,7 +37,7 @@ class MLPSampler(nn.Module):
         layers.append(nn.Dropout(dropout_rate))
         
         # Additional hidden layers
-        for _ in range(min(n_layers - 2, 0)):
+        for _ in range(min(n_layers - sample_layer_index - 1, 0)):
             layers.append(nn.Linear(hidden_size, hidden_size))
             layers.append(nn.ReLU())
             layers.append(nn.Dropout(dropout_rate))

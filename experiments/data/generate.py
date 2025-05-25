@@ -1,6 +1,7 @@
 import torch
 import numpy as np
 from sklearn.model_selection import train_test_split
+from .kernels import default_kernel_params, get_kernel_function, evaluate_gp_mean
 
 def generate_toy_data_1d(n_samples=500, noise_type='gaussian', mean_function='gaussian_rbf', **kwargs):
     """Generate a toy 1D regression dataset with heteroscedastic noise"""
@@ -128,7 +129,8 @@ def generate_toy_data_1d(n_samples=500, noise_type='gaussian', mean_function='ga
     return (x_train_tensor, y_train_tensor, x_test_tensor, y_test_tensor, 
             x_train, y_train, x_test, y_test, noise_args, mean_train, mean_test)
 
-def generate_toy_data_multidim(n_samples=500, x_dim=1, y_dim=1, dependent_noise=False, A=None, noise_scale=0.1, **kwargs):
+def generate_toy_data_multidim(n_samples=500, x_dim=1, y_dim=1, dependent_noise=False, noise_scale=0.1, 
+                               kernel_type='rbf', kernel_params=None, **kwargs):
     """
     Generate a multivariate regression dataset with Gaussian noise
     
@@ -142,27 +144,61 @@ def generate_toy_data_multidim(n_samples=500, x_dim=1, y_dim=1, dependent_noise=
         Dimension of output features
     dependent_noise : bool
         If True, use a full covariance matrix for noise; if False, use diagonal covariance
-    A : np.ndarray or None
-        Linear transformation matrix of shape (x_dim, y_dim). If None, randomly generated.
     noise_scale : float
         Base scale for the noise
+    kernel_type : str
+        Type of kernel for GP mean functions ('rbf', 'matern', 'linear')
+    kernel_params : dict or None
+        Parameters for the kernel. If None, random parameters are generated.
     
     Returns:
     --------
-    Tuple containing:
-        - PyTorch tensors for training and testing (x_train_tensor, y_train_tensor, x_test_tensor, y_test_tensor)
-        - NumPy arrays (x_train, y_train, x_test, y_test)
-        - Noise parameters and mean values
+    Dict containing training/testing data and metadata
     """
     # Generate random inputs
     x = np.random.uniform(-3, 3, (n_samples, x_dim))
     
-    # Generate or use provided transformation matrix A
-    if A is None:
-        A = np.random.uniform(-1, 1, (x_dim, y_dim))
+    # Generate or use provided kernel parameters
+    if kernel_params is None:
+        kernel_params = default_kernel_params(kernel_type)
     
-    # Generate mean values using linear transformation
-    mean = np.dot(x, A)
+    # Get the appropriate kernel function
+    kernel_function = get_kernel_function(kernel_type)
+    
+    # Sample GP functions for each output dimension
+    gp_functions = []
+    mean = np.zeros((n_samples, y_dim))
+    
+    for j in range(y_dim):
+        # Compute covariance matrix at training points
+        if kernel_type == 'rbf':
+            K = kernel_function(x, x, 
+                              kernel_params['lengthscale'], 
+                              kernel_params['amplitude'])
+        elif kernel_type == 'matern':
+            K = kernel_function(x, x, 
+                              kernel_params['lengthscale'], 
+                              kernel_params['amplitude'], 
+                              kernel_params['nu'])
+        elif kernel_type == 'linear':
+            K = kernel_function(x, x, 
+                              kernel_params['variance'], 
+                              kernel_params['offset'])
+        
+        # Add small diagonal for numerical stability
+        K += 1e-6 * np.eye(n_samples)
+        
+        # Sample function values from GP prior
+        f_values = np.random.multivariate_normal(np.zeros(n_samples), K)
+        mean[:, j] = f_values
+        
+        # Store information for later evaluation at new points
+        gp_functions.append({
+            'x_train': x.copy(),
+            'f_train': f_values.copy(),
+            'kernel_type': kernel_type,
+            'kernel_params': kernel_params.copy()
+        })
     
     # Generate noise based on covariance structure
     if dependent_noise:
@@ -182,11 +218,11 @@ def generate_toy_data_multidim(n_samples=500, x_dim=1, y_dim=1, dependent_noise=
     # Combine mean and noise
     y = mean + noise
     
-    # Store noise parameters
+    # Store noise parameters - replace 'A' with GP functions
     noise_args = {
         'cov_matrix': cov_matrix,
         'dependent_noise': dependent_noise,
-        'A': A
+        'gp_functions': gp_functions  # Store GP functions instead of 'A'
     }
     
     # Create indices for train-test split

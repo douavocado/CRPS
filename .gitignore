@@ -63,4 +63,8 @@ Thumbs.db
 
 # Generated figures
 figures/
-**/figures/ 
+**/figures/
+
+# PyTorch model files
+*.pt
+*.pth 
