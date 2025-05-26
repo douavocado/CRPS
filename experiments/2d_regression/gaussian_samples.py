@@ -34,7 +34,7 @@ y_dim = 2
 data_size = 5000
 
 # Generate toy data
-data_dict = generate_toy_data_multidim(n_samples=data_size, x_dim=x_dim, y_dim=y_dim, dependent_noise=True)
+data_dict = generate_toy_data_multidim(n_samples=data_size, x_dim=x_dim, y_dim=y_dim, dependent_noise=True, mean_function='zero', target_correlation=1.0)
 
 x_train_tensor = data_dict['x_train_tensor']
 y_train_tensor = data_dict['y_train_tensor']
@@ -54,9 +54,9 @@ train_loader, val_loader = prepare_data_loaders(x_train, y_train, x_val, y_val, 
 # Define model parameters
 hidden_size = 8
 latent_dim = 2
-n_layers = 1
-dropout_rate = 0.1
-sample_layer_index = 0
+n_layers = 3
+dropout_rate = 0.0
+sample_layer_index = 1
 
 # Create model
 model = MLPSampler(
@@ -71,7 +71,7 @@ model = MLPSampler(
 
 # Training parameters
 n_epochs = 100
-patience = 10
+patience = 5
 train_n_samples = 10
 n_samples = 1000
 device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')

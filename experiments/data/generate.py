@@ -129,8 +129,8 @@ def generate_toy_data_1d(n_samples=500, noise_type='gaussian', mean_function='ga
     return (x_train_tensor, y_train_tensor, x_test_tensor, y_test_tensor, 
             x_train, y_train, x_test, y_test, noise_args, mean_train, mean_test)
 
-def generate_toy_data_multidim(n_samples=500, x_dim=1, y_dim=1, dependent_noise=False, noise_scale=0.1, 
-                               kernel_type='rbf', kernel_params=None, **kwargs):
+def generate_toy_data_multidim(n_samples=500, x_dim=1, y_dim=1, dependent_noise=False, noise_scale=0.1, mean_function='gaussian',
+                               kernel_type='rbf', kernel_params=None, target_correlation=None, **kwargs):
     """
     Generate a multivariate regression dataset with Gaussian noise
     
@@ -146,10 +146,15 @@ def generate_toy_data_multidim(n_samples=500, x_dim=1, y_dim=1, dependent_noise=
         If True, use a full covariance matrix for noise; if False, use diagonal covariance
     noise_scale : float
         Base scale for the noise
+    mean_function : str
+        The type of function used for transformation of input features. Defaults to 'gaussian', which is a gaussian process with zero mean.
     kernel_type : str
         Type of kernel for GP mean functions ('rbf', 'matern', 'linear')
     kernel_params : dict or None
         Parameters for the kernel. If None, random parameters are generated.
+    target_correlation : float or None
+        If not None and dependent_noise is True, attempts to generate a covariance matrix
+        with an average correlation coefficient close to this value. Must be between -1 and 1.
     
     Returns:
     --------
@@ -157,73 +162,123 @@ def generate_toy_data_multidim(n_samples=500, x_dim=1, y_dim=1, dependent_noise=
     """
     # Generate random inputs
     x = np.random.uniform(-3, 3, (n_samples, x_dim))
+
+    # Store noise parameters
+    noise_args = {
+        'dependent_noise': dependent_noise,
+        'mean_function': mean_function,
+        'target_correlation': target_correlation,
+    }
     
-    # Generate or use provided kernel parameters
-    if kernel_params is None:
-        kernel_params = default_kernel_params(kernel_type)
-    
-    # Get the appropriate kernel function
-    kernel_function = get_kernel_function(kernel_type)
-    
-    # Sample GP functions for each output dimension
-    gp_functions = []
-    mean = np.zeros((n_samples, y_dim))
-    
-    for j in range(y_dim):
-        # Compute covariance matrix at training points
-        if kernel_type == 'rbf':
-            K = kernel_function(x, x, 
-                              kernel_params['lengthscale'], 
-                              kernel_params['amplitude'])
-        elif kernel_type == 'matern':
-            K = kernel_function(x, x, 
-                              kernel_params['lengthscale'], 
-                              kernel_params['amplitude'], 
-                              kernel_params['nu'])
-        elif kernel_type == 'linear':
-            K = kernel_function(x, x, 
-                              kernel_params['variance'], 
-                              kernel_params['offset'])
+    if mean_function == 'gaussian':
+        # Draw from gaussian process with zero mean
+        # Generate or use provided kernel parameters
+        if kernel_params is None:
+            kernel_params = default_kernel_params(kernel_type)
         
-        # Add small diagonal for numerical stability
-        K += 1e-6 * np.eye(n_samples)
+        # Get the appropriate kernel function
+        kernel_function = get_kernel_function(kernel_type)
         
-        # Sample function values from GP prior
-        f_values = np.random.multivariate_normal(np.zeros(n_samples), K)
-        mean[:, j] = f_values
+        # Sample GP functions for each output dimension
+        gp_functions = []
+        mean = np.zeros((n_samples, y_dim))
         
-        # Store information for later evaluation at new points
-        gp_functions.append({
-            'x_train': x.copy(),
-            'f_train': f_values.copy(),
-            'kernel_type': kernel_type,
-            'kernel_params': kernel_params.copy()
-        })
+        for j in range(y_dim):
+            # Compute covariance matrix at training points
+            if kernel_type == 'rbf':
+                K = kernel_function(x, x, 
+                                kernel_params['lengthscale'], 
+                                kernel_params['amplitude'])
+            elif kernel_type == 'matern':
+                K = kernel_function(x, x, 
+                                kernel_params['lengthscale'], 
+                                kernel_params['amplitude'], 
+                                kernel_params['nu'])
+            elif kernel_type == 'linear':
+                K = kernel_function(x, x, 
+                                kernel_params['variance'], 
+                                kernel_params['offset'])
+            
+            # Add small diagonal for numerical stability
+            K += 1e-6 * np.eye(n_samples)
+            
+            # Sample function values from GP prior
+            f_values = np.random.multivariate_normal(np.zeros(n_samples), K)
+            mean[:, j] = f_values
+            
+            # Store information for later evaluation at new points
+            gp_functions.append({
+                'x_train': x.copy(),
+                'f_train': f_values.copy(),
+                'kernel_type': kernel_type,
+                'kernel_params': kernel_params.copy()
+            })
+        
+        # update noise_args with gp_functions
+        noise_args['gp_functions'] = gp_functions
+    elif mean_function == 'zero':
+        # Set mean function to zero, independent of input features
+        mean = np.zeros((n_samples, y_dim))
+    else:
+        raise ValueError(f"Invalid mean function: {mean_function}")
     
     # Generate noise based on covariance structure
     if dependent_noise:
-        # Generate a random positive definite covariance matrix
-        random_matrix = np.random.randn(y_dim, y_dim)
-        cov_matrix = np.dot(random_matrix, random_matrix.T)
-        # Ensure reasonable scale
-        cov_matrix = noise_scale * cov_matrix / np.max(np.abs(cov_matrix))
+        if target_correlation is not None:
+            # Validate target correlation
+            if not -1.0 <= target_correlation <= 1.0:
+                raise ValueError("target_correlation must be between -1 and 1")
+            
+            # Create a correlation matrix with the desired average correlation
+            if y_dim > 1:
+                # Start with a diagonal correlation matrix (identity)
+                corr_matrix = np.eye(y_dim)
+                
+                # Fill the off-diagonal elements with the target correlation
+                for i in range(y_dim):
+                    for j in range(y_dim):
+                        if i != j:
+                            corr_matrix[i, j] = target_correlation
+                
+                # Generate random standard deviations
+                std_devs = np.sqrt(np.random.uniform(0.01, noise_scale, y_dim))
+                
+                # Convert correlation matrix to covariance matrix
+                cov_matrix = np.outer(std_devs, std_devs) * corr_matrix
+            else:
+                # For 1D case, just use a variance
+                cov_matrix = np.array([[noise_scale]])
+        else:
+            # Original approach: Generate a random positive definite covariance matrix
+            random_matrix = np.random.randn(y_dim, y_dim)
+            cov_matrix = np.dot(random_matrix, random_matrix.T)
+            # Ensure reasonable scale
+            cov_matrix = noise_scale * cov_matrix / np.max(np.abs(cov_matrix))
+        
         # Generate multivariate normal noise
         noise = np.random.multivariate_normal(np.zeros(y_dim), cov_matrix, size=n_samples)
+        
+        # Calculate and store the actual average correlation if target was specified
+        if target_correlation is not None and y_dim > 1:
+            # Convert covariance to correlation
+            diag_sqrt = np.sqrt(np.diag(cov_matrix))
+            actual_corr_matrix = cov_matrix / np.outer(diag_sqrt, diag_sqrt)
+            
+            # Calculate average of off-diagonal elements
+            mask = ~np.eye(y_dim, dtype=bool)  # mask to exclude diagonal
+            actual_avg_corr = np.mean(actual_corr_matrix[mask])
+            noise_args['actual_avg_correlation'] = float(actual_avg_corr)
     else:
         # Independent noise (diagonal covariance)
         variances = np.random.uniform(0.01, noise_scale, y_dim)
         cov_matrix = np.diag(variances)
         noise = np.random.multivariate_normal(np.zeros(y_dim), cov_matrix, size=n_samples)
     
+    # update noise_args with cov_matrix
+    noise_args['cov_matrix'] = cov_matrix
+    
     # Combine mean and noise
     y = mean + noise
-    
-    # Store noise parameters - replace 'A' with GP functions
-    noise_args = {
-        'cov_matrix': cov_matrix,
-        'dependent_noise': dependent_noise,
-        'gp_functions': gp_functions  # Store GP functions instead of 'A'
-    }
     
     # Create indices for train-test split
     indices = np.arange(n_samples)

@@ -61,6 +61,7 @@ def plot_prediction_samples(x_test, y_test, model, n_samples=100, n_points=5, de
             - kernel_type: Type of kernel ('rbf', 'matern', 'linear')
             - kernel_params: Kernel parameters
         - dependent_noise: Whether noise is dependent across dimensions
+        - mean_function: If 'zero', all dimensions have zero mean
         
     Returns:
     --------
@@ -85,14 +86,19 @@ def plot_prediction_samples(x_test, y_test, model, n_samples=100, n_points=5, de
     
     # Calculate true means if noise_args is provided
     true_means = None
-    if noise_args is not None and 'gp_functions' in noise_args:
-        gp_functions = noise_args['gp_functions']
-        y_dim = len(gp_functions)
-        true_means = np.zeros((len(x_subset_np), y_dim))
-        
-        # Evaluate each GP function at the new points
-        for j, gp_func in enumerate(gp_functions):
-            true_means[:, j] = evaluate_gp_mean(x_subset_np, gp_func)
+    if noise_args is not None:
+        # Case 1: Mean function is 'zero'
+        if 'mean_function' in noise_args and noise_args['mean_function'] == 'zero':
+            true_means = np.zeros((len(x_subset_np), output_dim))
+        # Case 2: GP functions are provided
+        elif 'gp_functions' in noise_args:
+            gp_functions = noise_args['gp_functions']
+            y_dim = len(gp_functions)
+            true_means = np.zeros((len(x_subset_np), y_dim))
+            
+            # Evaluate each GP function at the new points
+            for j, gp_func in enumerate(gp_functions):
+                true_means[:, j] = evaluate_gp_mean(x_subset_np, gp_func)
     
     # For outputs with more than 2 dimensions, randomly select 2 dimensions to visualize
     dims_to_plot = list(range(output_dim))
