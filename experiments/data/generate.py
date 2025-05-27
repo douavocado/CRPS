@@ -154,7 +154,9 @@ def generate_toy_data_multidim(n_samples=500, x_dim=1, y_dim=1, dependent_noise=
         Parameters for the kernel. If None, random parameters are generated.
     target_correlation : float or None
         If not None and dependent_noise is True, attempts to generate a covariance matrix
-        with an average correlation coefficient close to this value. Must be between -1 and 1.
+        with an average correlation coefficient magnitude close to this value. 
+        The correlations will have random signs but the average magnitude will be close to this value.
+        Must be between 0 and 1.
     
     Returns:
     --------
@@ -226,19 +228,22 @@ def generate_toy_data_multidim(n_samples=500, x_dim=1, y_dim=1, dependent_noise=
     if dependent_noise:
         if target_correlation is not None:
             # Validate target correlation
-            if not -1.0 <= target_correlation <= 1.0:
-                raise ValueError("target_correlation must be between -1 and 1")
+            if not 0.0 <= target_correlation <= 1.0:
+                raise ValueError("target_correlation must be between 0 and 1")
             
-            # Create a correlation matrix with the desired average correlation
+            # Create a correlation matrix with the desired average correlation magnitude
             if y_dim > 1:
                 # Start with a diagonal correlation matrix (identity)
                 corr_matrix = np.eye(y_dim)
                 
-                # Fill the off-diagonal elements with the target correlation
+                # Fill the off-diagonal elements with random correlations of the target magnitude
                 for i in range(y_dim):
-                    for j in range(y_dim):
-                        if i != j:
-                            corr_matrix[i, j] = target_correlation
+                    for j in range(i+1, y_dim):  # Only upper triangle to avoid duplicates
+                        # Random sign (+1 or -1) * target correlation magnitude
+                        sign = np.random.choice([-1, 1])
+                        corr_value = sign * target_correlation
+                        corr_matrix[i, j] = corr_value
+                        corr_matrix[j, i] = corr_value  # Symmetric matrix
                 
                 # Generate random standard deviations
                 std_devs = np.sqrt(np.random.uniform(0.01, noise_scale, y_dim))
@@ -264,10 +269,13 @@ def generate_toy_data_multidim(n_samples=500, x_dim=1, y_dim=1, dependent_noise=
             diag_sqrt = np.sqrt(np.diag(cov_matrix))
             actual_corr_matrix = cov_matrix / np.outer(diag_sqrt, diag_sqrt)
             
-            # Calculate average of off-diagonal elements
+            # Calculate average of off-diagonal elements (absolute values for magnitude)
             mask = ~np.eye(y_dim, dtype=bool)  # mask to exclude diagonal
-            actual_avg_corr = np.mean(actual_corr_matrix[mask])
-            noise_args['actual_avg_correlation'] = float(actual_avg_corr)
+            actual_avg_corr = np.mean(np.abs(actual_corr_matrix[mask]))
+            noise_args['actual_avg_correlation_magnitude'] = float(actual_avg_corr)
+            
+            # Also store the actual correlations (not just magnitude)
+            noise_args['actual_avg_correlation'] = float(np.mean(actual_corr_matrix[mask]))
     else:
         # Independent noise (diagonal covariance)
         variances = np.random.uniform(0.01, noise_scale, y_dim)

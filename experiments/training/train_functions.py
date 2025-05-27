@@ -7,6 +7,8 @@ import matplotlib.pyplot as plt
 from tqdm import tqdm
 import time
 from sklearn.metrics import mean_squared_error
+from sklearn.mixture import GaussianMixture
+from scipy.stats import gaussian_kde
 from ..visualisation.plotting import predict_samples
 
 def train_model(model, train_loader, val_loader, criterion=None, optimizer=None, 
@@ -229,17 +231,22 @@ def evaluate_metrics(model, x_test, y_test, n_samples=100, device='cpu'):
     Returns:
     --------
     dict
-        Dictionary of metrics
+        Dictionary of metrics including:
+        - mse: Mean squared error
+        - crps: Continuous Ranked Probability Score
+        - calibration: Coverage probabilities for prediction intervals
+        - log_likelihood: Log likelihood estimated via density estimation
+                         (using KDE for 1D, GMM for multidimensional outputs)
     """
     # Generate samples
     samples = predict_samples(model, x_test, n_samples=n_samples, device=device)
     
     # Convert to numpy
-    samples_np = samples.cpu().numpy()
-    y_test_np = y_test.cpu().numpy()
+    samples_np = samples.cpu().numpy()  # shape: [batch_size, n_samples, output_size]
+    y_test_np = y_test.cpu().numpy()    # shape: [batch_size, output_size]
     
     # Calculate mean predictions
-    mean_preds = samples_np.mean(axis=1)
+    mean_preds = samples_np.mean(axis=1)  # shape: [batch_size, output_size]
     
     # Calculate MSE
     mse = mean_squared_error(y_test_np, mean_preds)
@@ -257,8 +264,85 @@ def evaluate_metrics(model, x_test, y_test, n_samples=100, device='cpu'):
         in_interval = np.logical_and(y_test_np >= lower, y_test_np <= upper)
         calibration[f'{alpha:.2f}'] = np.mean(in_interval)
     
+    # Calculate log likelihood using density estimation
+    # For each test point, we estimate the density of the predicted samples
+    # and evaluate the log likelihood of the true value under this density
+    log_likelihoods = []
+    batch_size, n_samples_actual, output_size = samples_np.shape
+    
+    for i in range(batch_size):
+        sample_set = samples_np[i]  # shape: [n_samples, output_size]
+        true_value = y_test_np[i]   # shape: [output_size]
+        
+        try:
+            if output_size == 1:
+                # For 1D output, use Gaussian KDE
+                sample_set_1d = sample_set.flatten()  # shape: [n_samples]
+                if len(np.unique(sample_set_1d)) > 1:  # Check for variance
+                    kde = gaussian_kde(sample_set_1d)
+                    density_value = kde(true_value[0])[0]
+                    # Avoid log(0) by setting a minimum density value
+                    density_value = max(density_value, 1e-10)
+                    log_likelihood = np.log(density_value)
+                else:
+                    # If all samples are identical, use a small probability
+                    log_likelihood = -10.0
+            else:
+                # For multidimensional output, use Gaussian Mixture Model
+                # Try different numbers of components and select based on BIC
+                best_gmm = None
+                best_bic = np.inf
+                
+                for n_components in range(1, min(6, n_samples_actual // 10 + 1)):
+                    try:
+                        gmm = GaussianMixture(
+                            n_components=n_components, 
+                            covariance_type='full',
+                            random_state=42,
+                            max_iter=100
+                        )
+                        gmm.fit(sample_set)
+                        bic = gmm.bic(sample_set)
+                        
+                        if bic < best_bic:
+                            best_bic = bic
+                            best_gmm = gmm
+                    except:
+                        continue
+                
+                if best_gmm is not None:
+                    # Evaluate log likelihood at the true value
+                    log_likelihood = best_gmm.score_samples([true_value])[0]
+                else:
+                    # Fallback: assume a simple multivariate Gaussian
+                    try:
+                        mean = np.mean(sample_set, axis=0)
+                        cov = np.cov(sample_set.T)
+                        # Add small regularisation to avoid singular covariance
+                        cov += np.eye(output_size) * 1e-6
+                        
+                        # Calculate log likelihood using multivariate normal
+                        diff = true_value - mean
+                        log_likelihood = -0.5 * (
+                            output_size * np.log(2 * np.pi) +
+                            np.log(np.linalg.det(cov)) +
+                            diff.T @ np.linalg.inv(cov) @ diff
+                        )
+                    except:
+                        log_likelihood = -10.0
+                        
+        except Exception as e:
+            # If density estimation fails, assign a low log likelihood
+            log_likelihood = -10.0
+            
+        log_likelihoods.append(log_likelihood)
+    
+    # Calculate mean log likelihood
+    mean_log_likelihood = np.mean(log_likelihoods)
+    
     return {
         'mse': mse,
         'crps': crps,
-        'calibration': calibration
+        'calibration': calibration,
+        'log_likelihood': mean_log_likelihood
     }

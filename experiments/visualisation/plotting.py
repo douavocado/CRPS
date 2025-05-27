@@ -30,7 +30,6 @@ def predict_samples(model, x, n_samples=100, device='cpu'):
     
     with torch.no_grad():
         samples = model(x, n_samples=n_samples)
-    
     return samples
 
 def plot_prediction_samples(x_test, y_test, model, n_samples=100, n_points=5, device='cpu', noise_args=None):
@@ -100,11 +99,6 @@ def plot_prediction_samples(x_test, y_test, model, n_samples=100, n_points=5, de
             for j, gp_func in enumerate(gp_functions):
                 true_means[:, j] = evaluate_gp_mean(x_subset_np, gp_func)
     
-    # For outputs with more than 2 dimensions, randomly select 2 dimensions to visualize
-    dims_to_plot = list(range(output_dim))
-    if output_dim > 2:
-        dims_to_plot = np.random.choice(output_dim, 2, replace=False)
-    
     # Create figure based on output dimensionality
     if output_dim == 1:
         # Single dimension case - histogram for each test point
@@ -169,7 +163,7 @@ def plot_prediction_samples(x_test, y_test, model, n_samples=100, n_points=5, de
                                                         width_ratios=[4, 1], 
                                                         height_ratios=[4, 1],
                                                         wspace=0.05, 
-                                                        hspace=0.1)
+                                                        hspace=0.25)
             
             # Create the main scatter plot
             ax_scatter = plt.Subplot(fig, inner_grid[0, 0])
@@ -181,6 +175,11 @@ def plot_prediction_samples(x_test, y_test, model, n_samples=100, n_points=5, de
             fig.add_subplot(ax_histx)
             fig.add_subplot(ax_histy)
             
+            # For outputs with more than 2 dimensions, randomly select 2 dimensions to visualize
+            dims_to_plot = list(range(output_dim))
+            if output_dim > 2:
+                dims_to_plot = np.random.choice(output_dim, 2, replace=False)
+
             # For 2D output or when visualizing 2 dimensions from higher-dim output
             dim1, dim2 = dims_to_plot[0], dims_to_plot[1] if len(dims_to_plot) > 1 else dims_to_plot[0]
             
