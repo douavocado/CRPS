@@ -6,57 +6,139 @@ import numpy as np
 import matplotlib.pyplot as plt
 from tqdm import tqdm
 import time
-from sklearn.metrics import mean_squared_error
-from sklearn.mixture import GaussianMixture
-from scipy.stats import gaussian_kde
-from ..visualisation.plotting import predict_samples
 
-def train_model(model, train_loader, val_loader, criterion=None, optimizer=None, 
-                n_epochs=100, patience=10, n_samples=100, device='cpu', 
-                verbose=True, save_path=None):
+def create_training_config(model_type='MLPSampler', loss_type='crps', **kwargs):
     """
-    Train a MLPSampler model with early stopping based on validation loss.
+    Create a training configuration dictionary with default values.
     
     Parameters:
     -----------
-    model : MLPSampler
-        The model to train
-    train_loader : DataLoader
-        DataLoader for training data
-    val_loader : DataLoader
-        DataLoader for validation data
-    criterion : function, optional
-        Loss function. If None, model.crps_loss will be used
-    optimizer : torch.optim, optional
-        Optimizer. If None, Adam with lr=0.001 will be used
-    n_epochs : int
-        Maximum number of epochs to train
-    patience : int
-        Number of epochs to wait for improvement before early stopping
-    n_samples : int
-        Number of samples to generate for CRPS calculation
-    device : str
-        Device to use for training ('cpu' or 'cuda')
-    verbose : bool
-        Whether to print progress
-    save_path : str, optional
-        Path to save the best model
+    model_type : str
+        Type of model ('MLPSampler' or 'SimpleAffineNormal')
+    loss_type : str
+        Type of loss function ('crps', 'energy_score', or 'log_likelihood')
+    **kwargs : dict
+        Additional configuration parameters to override defaults
         
     Returns:
     --------
     dict
-        Dictionary containing training history and best model
+        Complete training configuration dictionary
     """
+    # Set defaults based on model type
+    if model_type == 'SimpleAffineNormal':
+        default_lr = 0.001
+        if loss_type not in ['log_likelihood', 'energy_score', 'crps']:
+            raise ValueError(f"Loss type '{loss_type}' not supported for SimpleAffineNormal")
+    elif model_type == 'MLPSampler':
+        default_lr = 0.001
+        if loss_type not in ['crps', 'energy_score']:
+            raise ValueError(f"Loss type '{loss_type}' not supported for MLPSampler")
+    else:
+        raise ValueError(f"Model type '{model_type}' not recognized")
+    
+    # Default configuration
+    config = {
+        # Model and loss configuration
+        'model_type': model_type,
+        'loss_type': loss_type,
+        
+        # Training parameters
+        'n_epochs': 100,
+        'patience': 10,
+        'learning_rate': default_lr,
+        'n_samples': 100,  # For CRPS and energy score loss
+        'device': 'cpu',
+        'verbose': True,
+        
+        # Saving and tracking
+        'save_path': None,
+        'track_weights': False,
+        'track_samples_every': 5,
+        
+        # Test data for intermediate plots
+        'x_test': None,
+        'y_test': None,
+        'noise_args': None,
+        
+        # Optional parameters
+        'optimizer': None,
+        'criterion': None,
+    }
+    
+    # Update with provided kwargs
+    config.update(kwargs)
+    
+    return config
+
+def train_model(model, train_loader, val_loader, training_config):
+    """
+    Unified training function for all model types and loss functions.
+    
+    Parameters:
+    -----------
+    model : nn.Module
+        The model to train (MLPSampler, SimpleAffineNormal, etc.)
+    train_loader : DataLoader
+        DataLoader for training data
+    val_loader : DataLoader
+        DataLoader for validation data
+    training_config : dict
+        Configuration dictionary containing all training parameters.
+        Use create_training_config() for easy configuration creation.
+        Required keys:
+        - 'model_type': str ('MLPSampler' or 'SimpleAffineNormal')
+        - 'loss_type': str ('crps', 'energy_score', or 'log_likelihood')
+        
+        Optional keys with defaults:
+        - 'n_epochs': int (default: 100)
+        - 'patience': int (default: 10)
+        - 'learning_rate': float (default: 0.001)
+        - 'n_samples': int (default: 100) - For CRPS and energy score loss
+        - 'device': str (default: 'cpu')
+        - 'verbose': bool (default: True)
+        - 'save_path': str or None (default: None)
+        - 'track_weights': bool (default: False)
+        - 'track_samples_every': int (default: 5)
+        - 'x_test': torch.Tensor or None (default: None)
+        - 'y_test': torch.Tensor or None (default: None)
+        - 'noise_args': dict or None (default: None)
+        - 'optimizer': torch.optim or None (default: None)
+        - 'criterion': function or None (default: None)
+        
+    Returns:
+    --------
+    dict
+        Dictionary containing training history and best model information
+    """
+    # Extract configuration
+    model_type = training_config.get('model_type', 'MLPSampler')
+    loss_type = training_config.get('loss_type', 'crps')
+    n_epochs = training_config.get('n_epochs', 100)
+    patience = training_config.get('patience', 10)
+    learning_rate = training_config.get('learning_rate', 0.001)
+    n_samples = training_config.get('n_samples', 100)
+    device = training_config.get('device', 'cpu')
+    verbose = training_config.get('verbose', True)
+    save_path = training_config.get('save_path', None)
+    track_weights = training_config.get('track_weights', False)
+    track_samples_every = training_config.get('track_samples_every', 5)
+    x_test = training_config.get('x_test', None)
+    y_test = training_config.get('y_test', None)
+    noise_args = training_config.get('noise_args', None)
+    
     # Move model to device
     model = model.to(device)
     
-    # Set up optimizer if not provided
+    # Set up optimizer
+    optimizer = training_config.get('optimizer', None)
     if optimizer is None:
-        optimizer = optim.Adam(model.parameters(), lr=0.001)
+        optimizer = optim.Adam(model.parameters(), lr=learning_rate)
     
-    # Set up criterion if not provided
+    # Set up loss function based on model type and loss type
+    criterion = training_config.get('criterion', None)
     if criterion is None:
-        criterion = lambda x, y: model.crps_loss(x, y, n_samples=n_samples)
+        criterion = _get_loss_function(model, model_type, loss_type, n_samples)
     
     # Initialize variables for early stopping
     best_val_loss = float('inf')
@@ -69,6 +151,23 @@ def train_model(model, train_loader, val_loader, criterion=None, optimizer=None,
         'val_loss': [],
         'epochs': []
     }
+    
+    # Initialize weight tracker if requested
+    weight_tracker = None
+    intermediate_plots_dir = None
+    weight_plots_dir = None
+    if track_weights or (y_test is not None):
+        from experiments.visualisation.weight_tracking import WeightTracker, create_intermediate_sample_plots
+        weight_tracker = WeightTracker(model, track_weights=track_weights, 
+                                     track_samples_every=track_samples_every)
+        
+        # Create directory for intermediate plots if saving model
+        if save_path is not None:
+            base_dir = os.path.dirname(save_path)
+            intermediate_plots_dir = os.path.join(base_dir, 'intermediate_plots')
+            weight_plots_dir = os.path.join(base_dir, 'weight_evolution')
+            os.makedirs(intermediate_plots_dir, exist_ok=True)
+            os.makedirs(weight_plots_dir, exist_ok=True)
     
     # Training loop
     for epoch in range(n_epochs):
@@ -85,8 +184,8 @@ def train_model(model, train_loader, val_loader, criterion=None, optimizer=None,
             # Zero gradients
             optimizer.zero_grad()
             
-            # Compute loss
-            loss = criterion(x_batch, y_batch)
+            # Compute loss based on model type and loss type
+            loss = _compute_loss(model, x_batch, y_batch, criterion, model_type, loss_type, n_samples)
             
             # Backpropagation
             loss.backward()
@@ -98,7 +197,7 @@ def train_model(model, train_loader, val_loader, criterion=None, optimizer=None,
             train_losses.append(loss.item())
         
         # Validation phase
-        val_loss = evaluate_model(model, val_loader, criterion, device, n_samples)
+        val_loss = _evaluate_loss_internal(model, val_loader, criterion, model_type, loss_type, n_samples, device)
         
         # Record history
         avg_train_loss = np.mean(train_losses)
@@ -107,8 +206,31 @@ def train_model(model, train_loader, val_loader, criterion=None, optimizer=None,
         history['epochs'].append(epoch + 1)
         
         # Print progress
-        if verbose:
+        if verbose and ((epoch + 1) % 10 == 0 or model_type == 'MLPSampler'):
             print(f"Epoch {epoch+1}/{n_epochs} - Train Loss: {avg_train_loss:.4f} - Val Loss: {val_loss:.4f}")
+        
+        # Track weights and create intermediate plots
+        if weight_tracker is not None:
+            # Record weights
+            weight_tracker.record_weights(epoch + 1)
+            
+            # Create intermediate sample plots if requested
+            if (y_test is not None and 
+                weight_tracker.should_record_samples(epoch + 1) and 
+                intermediate_plots_dir is not None):
+                try:
+                    # For SimpleAffineNormal, x_test should be None
+                    x_for_plot = x_test if model_type == 'MLPSampler' else None
+                    plot_path = create_intermediate_sample_plots(
+                        model, x_for_plot, y_test, noise_args, epoch + 1,
+                        intermediate_plots_dir, n_samples=500, device=device
+                    )
+                    weight_tracker.record_sample_epoch(epoch + 1)
+                    if verbose and ((epoch + 1) % 10 == 0 or model_type == 'MLPSampler'):
+                        print(f"  Saved intermediate samples: {os.path.basename(plot_path)}")
+                except Exception as e:
+                    if verbose and ((epoch + 1) % 10 == 0 or model_type == 'MLPSampler'):
+                        print(f"  Warning: Failed to create intermediate plot: {e}")
         
         # Check for improvement
         if val_loss < best_val_loss:
@@ -133,51 +255,123 @@ def train_model(model, train_loader, val_loader, criterion=None, optimizer=None,
                 break
     
     # Load best model weights
-    model.load_state_dict(best_model['model_state_dict'])
+    if best_model is not None:
+        model.load_state_dict(best_model['model_state_dict'])
+    
+    # Create weight evolution plots if tracking was enabled
+    weight_evolution_info = {}
+    if weight_tracker is not None and weight_tracker.track_weights:
+        try:
+            figures = weight_tracker.plot_weight_evolution(save_dir=weight_plots_dir, noise_args=noise_args)
+            weight_evolution_info = {
+                'n_plots_created': len(figures),
+                'sample_epochs': weight_tracker.sample_epochs.copy(),
+                'weight_plots_dir': weight_plots_dir if save_path else None
+            }
+            # Close figures to save memory
+            for fig in figures:
+                plt.close(fig)
+            if verbose:
+                print(f"Created {len(figures)} weight evolution plots")
+        except Exception as e:
+            if verbose:
+                print(f"Warning: Failed to create weight evolution plots: {e}")
     
     return {
         'model': model,
         'history': history,
-        'best_epoch': best_model['epoch'],
-        'best_val_loss': best_val_loss
+        'best_epoch': best_model['epoch'] if best_model else n_epochs,
+        'best_val_loss': best_val_loss,
+        'weight_tracking': weight_evolution_info
     }
 
-def evaluate_model(model, data_loader, criterion=None, device='cpu', n_samples=100):
+def _get_loss_function(model, model_type, loss_type, n_samples):
+    """Get the appropriate loss function based on model and loss type."""
+    if model_type == 'SimpleAffineNormal':
+        if loss_type == 'log_likelihood':
+            return lambda x, y: -model.log_likelihood(y).mean()
+        elif loss_type == 'energy_score':
+            from common.losses import energy_score_loss
+            def energy_loss_fn(x, y):
+                batch_size = y.shape[0]
+                samples = model.forward(n_samples=n_samples).unsqueeze(0).repeat(batch_size, 1, 1)
+                energy_scores = energy_score_loss(samples, y)
+                return energy_scores.mean()
+            return energy_loss_fn
+        elif loss_type == 'crps':
+            return lambda x, y: model.crps_loss(y, n_samples=n_samples)
+        else:
+            raise ValueError(f"Loss type '{loss_type}' not supported for SimpleAffineNormal")
+    
+    elif model_type == 'MLPSampler':
+        if loss_type == 'crps':
+            return lambda x, y: model.crps_loss(x, y, n_samples=n_samples)
+        elif loss_type == 'energy_score':
+            return lambda x, y: model.energy_score_loss(x, y, n_samples=n_samples)
+        else:
+            raise ValueError(f"Loss type '{loss_type}' not supported for MLPSampler")
+    
+    else:
+        raise ValueError(f"Model type '{model_type}' not recognized")
+
+def _compute_loss(model, x_batch, y_batch, criterion, model_type, loss_type, n_samples):
+    """Compute loss based on model type."""
+    if model_type == 'SimpleAffineNormal':
+        # SimpleAffineNormal doesn't use x_batch for most loss functions
+        return criterion(x_batch, y_batch)
+    else:
+        # MLPSampler uses both x and y
+        return criterion(x_batch, y_batch)
+
+def _evaluate_loss_internal(model, data_loader, criterion, model_type, loss_type, n_samples, device):
+    """Evaluate model loss during training (internal function)."""
+    model.eval()
+    losses = []
+    
+    with torch.no_grad():
+        for x_batch, y_batch in data_loader:
+            x_batch, y_batch = x_batch.to(device), y_batch.to(device)
+            loss = _compute_loss(model, x_batch, y_batch, criterion, model_type, loss_type, n_samples)
+            losses.append(loss.item())
+    
+    return np.mean(losses)
+
+def evaluate_model(model, data_loader, training_config):
     """
-    Evaluate a model on a dataset.
+    Evaluate a model on a dataset using the same configuration as training.
     
     Parameters:
     -----------
-    model : MLPSampler
+    model : nn.Module
         The model to evaluate
     data_loader : DataLoader
         DataLoader for evaluation data
-    criterion : function, optional
-        Loss function. If None, model.crps_loss will be used
-    device : str
-        Device to use for evaluation ('cpu' or 'cuda')
-    n_samples : int
-        Number of samples to generate for CRPS calculation
+    training_config : dict
+        Same configuration dict used for training
         
     Returns:
     --------
     float
         Average loss on the dataset
     """
-    model.eval()
-    losses = []
+    # Import here to avoid circular imports
+    from .evaluation import evaluate_model as eval_model, create_evaluation_config
     
-    # Set up criterion if not provided
-    if criterion is None:
-        criterion = lambda x, y: model.crps_loss(x, y, n_samples=n_samples)
+    model_type = training_config.get('model_type', 'MLPSampler')
+    loss_type = training_config.get('loss_type', 'crps')
+    n_samples = training_config.get('n_samples', 100)
+    device = training_config.get('device', 'cpu')
     
-    with torch.no_grad():
-        for x_batch, y_batch in data_loader:
-            x_batch, y_batch = x_batch.to(device), y_batch.to(device)
-            loss = criterion(x_batch, y_batch)
-            losses.append(loss.item())
+    # Create evaluation config for loss evaluation
+    eval_config = create_evaluation_config(
+        model_type=model_type,
+        evaluation_type='loss',
+        loss_type=loss_type,
+        n_samples=n_samples,
+        device=device
+    )
     
-    return np.mean(losses)
+    return eval_model(model, data_loader, eval_config)
 
 def prepare_data_loaders(x_train, y_train, x_val, y_val, batch_size=32):
     """
@@ -211,138 +405,21 @@ def prepare_data_loaders(x_train, y_train, x_val, y_val, batch_size=32):
     
     return train_loader, val_loader
 
-def evaluate_metrics(model, x_test, y_test, n_samples=100, device='cpu'):
-    """
-    Evaluate various metrics on test data.
-    
-    Parameters:
-    -----------
-    model : MLPSampler
-        Trained model
-    x_test : torch.Tensor
-        Test inputs
-    y_test : torch.Tensor
-        Test targets
-    n_samples : int
-        Number of samples to generate
-    device : str
-        Device to use for prediction ('cpu' or 'cuda')
-        
-    Returns:
-    --------
-    dict
-        Dictionary of metrics including:
-        - mse: Mean squared error
-        - crps: Continuous Ranked Probability Score
-        - calibration: Coverage probabilities for prediction intervals
-        - log_likelihood: Log likelihood estimated via density estimation
-                         (using KDE for 1D, GMM for multidimensional outputs)
-    """
-    # Generate samples
-    samples = predict_samples(model, x_test, n_samples=n_samples, device=device)
-    
-    # Convert to numpy
-    samples_np = samples.cpu().numpy()  # shape: [batch_size, n_samples, output_size]
-    y_test_np = y_test.cpu().numpy()    # shape: [batch_size, output_size]
-    
-    # Calculate mean predictions
-    mean_preds = samples_np.mean(axis=1)  # shape: [batch_size, output_size]
-    
-    # Calculate MSE
-    mse = mean_squared_error(y_test_np, mean_preds)
-    
-    # Calculate CRPS (already done in model evaluation)
-    crps = evaluate_model(model, torch.utils.data.DataLoader(
-        torch.utils.data.TensorDataset(x_test, y_test), 
-        batch_size=len(x_test)), device=device, n_samples=n_samples)
-    
-    # Calculate calibration (percentage of true values within prediction intervals)
-    calibration = {}
-    for alpha in [0.5, 0.9, 0.95, 0.99]:
-        lower = np.percentile(samples_np, (1-alpha)/2 * 100, axis=1)
-        upper = np.percentile(samples_np, (1+alpha)/2 * 100, axis=1)
-        in_interval = np.logical_and(y_test_np >= lower, y_test_np <= upper)
-        calibration[f'{alpha:.2f}'] = np.mean(in_interval)
-    
-    # Calculate log likelihood using density estimation
-    # For each test point, we estimate the density of the predicted samples
-    # and evaluate the log likelihood of the true value under this density
-    log_likelihoods = []
-    batch_size, n_samples_actual, output_size = samples_np.shape
-    
-    for i in range(batch_size):
-        sample_set = samples_np[i]  # shape: [n_samples, output_size]
-        true_value = y_test_np[i]   # shape: [output_size]
-        
-        try:
-            if output_size == 1:
-                # For 1D output, use Gaussian KDE
-                sample_set_1d = sample_set.flatten()  # shape: [n_samples]
-                if len(np.unique(sample_set_1d)) > 1:  # Check for variance
-                    kde = gaussian_kde(sample_set_1d)
-                    density_value = kde(true_value[0])[0]
-                    # Avoid log(0) by setting a minimum density value
-                    density_value = max(density_value, 1e-10)
-                    log_likelihood = np.log(density_value)
-                else:
-                    # If all samples are identical, use a small probability
-                    log_likelihood = -10.0
-            else:
-                # For multidimensional output, use Gaussian Mixture Model
-                # Try different numbers of components and select based on BIC
-                best_gmm = None
-                best_bic = np.inf
-                
-                for n_components in range(1, min(6, n_samples_actual // 10 + 1)):
-                    try:
-                        gmm = GaussianMixture(
-                            n_components=n_components, 
-                            covariance_type='full',
-                            random_state=42,
-                            max_iter=100
-                        )
-                        gmm.fit(sample_set)
-                        bic = gmm.bic(sample_set)
-                        
-                        if bic < best_bic:
-                            best_bic = bic
-                            best_gmm = gmm
-                    except:
-                        continue
-                
-                if best_gmm is not None:
-                    # Evaluate log likelihood at the true value
-                    log_likelihood = best_gmm.score_samples([true_value])[0]
-                else:
-                    # Fallback: assume a simple multivariate Gaussian
-                    try:
-                        mean = np.mean(sample_set, axis=0)
-                        cov = np.cov(sample_set.T)
-                        # Add small regularisation to avoid singular covariance
-                        cov += np.eye(output_size) * 1e-6
-                        
-                        # Calculate log likelihood using multivariate normal
-                        diff = true_value - mean
-                        log_likelihood = -0.5 * (
-                            output_size * np.log(2 * np.pi) +
-                            np.log(np.linalg.det(cov)) +
-                            diff.T @ np.linalg.inv(cov) @ diff
-                        )
-                    except:
-                        log_likelihood = -10.0
-                        
-        except Exception as e:
-            # If density estimation fails, assign a low log likelihood
-            log_likelihood = -10.0
-            
-        log_likelihoods.append(log_likelihood)
-    
-    # Calculate mean log likelihood
-    mean_log_likelihood = np.mean(log_likelihoods)
-    
-    return {
-        'mse': mse,
-        'crps': crps,
-        'calibration': calibration,
-        'log_likelihood': mean_log_likelihood
+# Legacy function names for backward compatibility
+def train_affine_model_energy(model, train_loader, val_loader, **kwargs):
+    """Legacy wrapper for SimpleAffineNormal with energy score loss."""
+    training_config = {
+        'model_type': 'SimpleAffineNormal',
+        'loss_type': 'energy_score',
+        **kwargs
     }
+    return train_model(model, train_loader, val_loader, training_config)
+
+def train_affine_model(model, train_loader, val_loader, **kwargs):
+    """Legacy wrapper for SimpleAffineNormal with log likelihood loss."""
+    training_config = {
+        'model_type': 'SimpleAffineNormal',
+        'loss_type': 'log_likelihood',
+        **kwargs
+    }
+    return train_model(model, train_loader, val_loader, training_config)

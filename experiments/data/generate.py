@@ -250,6 +250,13 @@ def generate_toy_data_multidim(n_samples=500, x_dim=1, y_dim=1, dependent_noise=
                 
                 # Convert correlation matrix to covariance matrix
                 cov_matrix = np.outer(std_devs, std_devs) * corr_matrix
+                # Ensure the covariance matrix is symmetric and positive-semi-definite
+                cov_matrix = (cov_matrix + cov_matrix.T) / 2
+                # now ensure that min eigenvalue is positive
+                eigvals = np.real(np.linalg.eigvalsh(cov_matrix))
+                if np.min(eigvals) < 0:
+                    # Add a small positive value to diagonal to make it positive-semi-definite
+                    cov_matrix += (abs(np.min(eigvals)) + 1e-6) * np.eye(y_dim)
             else:
                 # For 1D case, just use a variance
                 cov_matrix = np.array([[noise_scale]])

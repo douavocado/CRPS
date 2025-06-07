@@ -36,14 +36,15 @@ def plot_prediction_samples(x_test, y_test, model, n_samples=100, n_points=5, de
     """
     Plot prediction samples for randomly selected test points.
     Handles multi-dimensional outputs by visualizing empirical densities.
+    Works with both MLPSampler and SimpleAffineNormal models.
     
     Parameters:
     -----------
-    x_test : torch.Tensor
-        Test inputs
+    x_test : torch.Tensor or None
+        Test inputs (required for MLPSampler, can be None for SimpleAffineNormal)
     y_test : torch.Tensor
         Test targets
-    model : MLPSampler
+    model : MLPSampler or SimpleAffineNormal
         Trained model
     n_samples : int
         Number of samples to generate
@@ -67,18 +68,36 @@ def plot_prediction_samples(x_test, y_test, model, n_samples=100, n_points=5, de
     matplotlib.figure.Figure
         The created figure
     """
+    # Detect model type
+    model_type = type(model).__name__
+    is_affine_model = model_type == 'SimpleAffineNormal'
+    
     # Select random test points
-    indices = np.random.choice(len(x_test), min(n_points, len(x_test)), replace=False)
-    x_subset = x_test[indices]
+    indices = np.random.choice(len(y_test), min(n_points, len(y_test)), replace=False)
     y_subset = y_test[indices]
     
-    # Generate samples
-    samples = predict_samples(model, x_subset, n_samples=n_samples, device=device)
+    # Generate samples based on model type
+    if is_affine_model:
+        # For SimpleAffineNormal, generate samples from the fixed distribution
+        model.eval()
+        model.to(device)
+        with torch.no_grad():
+            samples = model.forward(n_samples=n_samples, batch_size=n_points)  # [n_points, n_samples, output_dim]
+    else:
+        # For MLPSampler, generate samples per input point
+        if x_test is None:
+            raise ValueError("x_test is required for MLPSampler models")
+        x_subset = x_test[indices]
+        samples = predict_samples(model, x_subset, n_samples=n_samples, device=device)
     
     # Convert to numpy for plotting
     samples_np = samples.cpu().numpy()
-    x_subset_np = x_subset.cpu().numpy()
     y_subset_np = y_subset.cpu().numpy()
+    
+    # Get input subset for labeling (if available)
+    x_subset_np = None
+    if not is_affine_model and x_test is not None:
+        x_subset_np = x_test[indices].cpu().numpy()
     
     # Get output dimension
     output_dim = y_subset_np.shape[1]
@@ -86,11 +105,13 @@ def plot_prediction_samples(x_test, y_test, model, n_samples=100, n_points=5, de
     # Calculate true means if noise_args is provided
     true_means = None
     if noise_args is not None:
-        # Case 1: Mean function is 'zero'
         if 'mean_function' in noise_args and noise_args['mean_function'] == 'zero':
-            true_means = np.zeros((len(x_subset_np), output_dim))
-        # Case 2: GP functions are provided
-        elif 'gp_functions' in noise_args:
+            if is_affine_model:
+                # For affine models, true mean is the same for all points
+                true_means = np.zeros((n_points, output_dim))
+            else:
+                true_means = np.zeros((len(x_subset_np), output_dim))
+        elif 'gp_functions' in noise_args and not is_affine_model:
             gp_functions = noise_args['gp_functions']
             y_dim = len(gp_functions)
             true_means = np.zeros((len(x_subset_np), y_dim))
@@ -110,9 +131,6 @@ def plot_prediction_samples(x_test, y_test, model, n_samples=100, n_points=5, de
             ax = axes[i]
             # Plot histogram of samples
             ax.hist(samples_np[i, :, 0], bins=20, alpha=0.7, density=True)
-            
-            # # Plot true value
-            # ax.axvline(y_subset_np[i, 0], color='r', linestyle='--', label='True Value')
             
             # Plot mean prediction
             mean_pred = samples_np[i, :, 0].mean()
@@ -141,7 +159,11 @@ def plot_prediction_samples(x_test, y_test, model, n_samples=100, n_points=5, de
                     pdf = norm.pdf(x_range, true_mean, std_dev)
                     ax.plot(x_range, pdf, 'b-', alpha=0.7, label='True Distribution')
             
-            ax.set_title(f"Test Point {i+1}: X = {x_subset_np[i, 0]:.2f}")
+            # Set title based on model type
+            if is_affine_model:
+                ax.set_title(f"Test Point {i+1}")
+            else:
+                ax.set_title(f"Test Point {i+1}: X = {x_subset_np[i, 0]:.2f}")
             ax.set_xlabel('Prediction')
             ax.set_ylabel('Density')
             
@@ -190,13 +212,18 @@ def plot_prediction_samples(x_test, y_test, model, n_samples=100, n_points=5, de
                           alpha=0.3, s=10, label='Subselected 100/{} Samples'.format(samples_np[i, :, dim1].shape[0]))
             else:
                 ax_scatter.scatter(samples_np[i, :, dim1], samples_np[i, :, dim2], 
-                          alpha=0.3, s=10, label='Samples')
+                          alpha=0.3, s=10, label='Model Samples')
             
             # Plot mean prediction
             mean_pred_dim1 = samples_np[i, :, dim1].mean()
             mean_pred_dim2 = samples_np[i, :, dim2].mean()
             ax_scatter.scatter(mean_pred_dim1, mean_pred_dim2, 
                       color='g', marker='o', s=100, label='Mean Prediction')
+            
+            # Plot test point (true value)
+            if not is_affine_model:
+                ax_scatter.scatter(y_subset_np[i, dim1], y_subset_np[i, dim2], 
+                          color='red', s=100, marker='x', label='True Value')
             
             # Plot true confidence intervals if noise_args is provided
             if noise_args is not None and 'cov_matrix' in noise_args and true_means is not None:
@@ -348,8 +375,11 @@ def plot_prediction_samples(x_test, y_test, model, n_samples=100, n_points=5, de
             ax_histy.spines['right'].set_visible(False)
             ax_histy.spines['top'].set_visible(False)
             
-            # Set labels for the main plot
-            ax_scatter.set_title(f"Test Point {i+1}: X = {', '.join([f'{x_subset_np[i, j]:.2f}' for j in range(x_subset_np.shape[1])])}")
+            # Set labels for the main plot based on model type
+            if is_affine_model:
+                ax_scatter.set_title(f"Test Point {i+1}")
+            else:
+                ax_scatter.set_title(f"Test Point {i+1}: X = {', '.join([f'{x_subset_np[i, j]:.2f}' for j in range(x_subset_np.shape[1])])}")
             ax_scatter.set_xlabel(f'Dimension {dim1+1}')
             ax_scatter.set_ylabel(f'Dimension {dim2+1}')
             
@@ -390,4 +420,6 @@ def plot_training_history(history):
     plt.grid(True)
     plt.tight_layout()
     
-    return fig 
+    return fig
+
+ 
