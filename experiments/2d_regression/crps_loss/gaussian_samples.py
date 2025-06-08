@@ -192,22 +192,12 @@ def run_experiment(seed, run_id, base_config):
         # Plot prediction samples
         samples_plot = plot_prediction_samples(
             None, y_test_tensor, model, 
-            n_samples=n_samples, n_points=5, device=device,
+            n_samples=n_samples, n_points=1, device=device,
             noise_args=noise_args
         )
         samples_plot_path = os.path.join(run_dir, 'prediction_samples.png')
         samples_plot.savefig(samples_plot_path)
         plt.close(samples_plot)
-
-        # Also create a plot with more test points
-        samples_plot_more = plot_prediction_samples(
-            None, y_test_tensor, model, 
-            n_samples=n_samples, n_points=10, device=device,
-            noise_args=noise_args
-        )
-        samples_plot_more_path = os.path.join(run_dir, 'prediction_samples_more.png')
-        samples_plot_more.savefig(samples_plot_more_path)
-        plt.close(samples_plot_more)
         
         # Get learned parameters
         mean, cov = model.get_mean_and_covariance()
@@ -238,22 +228,12 @@ def run_experiment(seed, run_id, base_config):
         # Plot prediction samples with true confidence intervals
         samples_plot = plot_prediction_samples(
             x_test_tensor, y_test_tensor, model, 
-            n_samples=n_samples, n_points=5, device=device,
+            n_samples=n_samples, n_points=1, device=device,
             noise_args=noise_args
         )
         samples_plot_path = os.path.join(run_dir, 'prediction_samples.png')
         samples_plot.savefig(samples_plot_path)
         plt.close(samples_plot)
-
-        # Also create a plot with more test points to better visualize the distribution
-        samples_plot_more = plot_prediction_samples(
-            x_test_tensor, y_test_tensor, model, 
-            n_samples=n_samples, n_points=10, device=device,
-            noise_args=noise_args
-        )
-        samples_plot_more_path = os.path.join(run_dir, 'prediction_samples_more.png')
-        samples_plot_more.savefig(samples_plot_more_path)
-        plt.close(samples_plot_more)
         
         learned_params = {}
 
@@ -325,7 +305,7 @@ def main():
         'train_n_samples': 10,
         'n_samples': 1000,
         'batch_size': 64,
-        'learning_rate': 0.001,  # Only used for SimpleAffineNormal
+        'learning_rate': 0.01,  # Only used for SimpleAffineNormal
         
         # Weight tracking parameters
         'track_weights': True,  # Enable weight evolution tracking

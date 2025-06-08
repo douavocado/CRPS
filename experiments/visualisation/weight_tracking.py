@@ -363,7 +363,7 @@ class WeightTracker:
         return figures
 
 def create_intermediate_sample_plots(model, x_test, y_test, noise_args, epoch, 
-                                   save_dir, n_samples=100, n_points=5, device='cpu'):
+                                   save_dir, n_samples=1000, n_points=1, device='cpu'):
     """
     Create and save prediction sample plots for intermediate training states.
     

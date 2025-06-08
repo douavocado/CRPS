@@ -57,7 +57,7 @@ class MLPSampler(nn.Module):
                 layers.append(nn.Dropout(dropout_rate))
         
             # Additional hidden layers
-            for _ in range(min(n_layers - sample_layer_index - 1, 0)):
+            for _ in range(max(n_layers - sample_layer_index - 1, 0)):
                 layers.append(nn.Linear(hidden_size, hidden_size))
                 if self.non_linear:
                     layers.append(nn.ReLU())

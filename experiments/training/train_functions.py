@@ -223,7 +223,7 @@ def train_model(model, train_loader, val_loader, training_config):
                     x_for_plot = x_test if model_type == 'MLPSampler' else None
                     plot_path = create_intermediate_sample_plots(
                         model, x_for_plot, y_test, noise_args, epoch + 1,
-                        intermediate_plots_dir, n_samples=500, device=device
+                        intermediate_plots_dir, n_samples=1000, device=device
                     )
                     weight_tracker.record_sample_epoch(epoch + 1)
                     if verbose and ((epoch + 1) % 10 == 0 or model_type == 'MLPSampler'):
@@ -294,7 +294,7 @@ def _get_loss_function(model, model_type, loss_type, n_samples):
             from common.losses import energy_score_loss
             def energy_loss_fn(x, y):
                 batch_size = y.shape[0]
-                samples = model.forward(n_samples=n_samples).unsqueeze(0).repeat(batch_size, 1, 1)
+                samples = model.forward(n_samples=n_samples, batch_size=batch_size)
                 energy_scores = energy_score_loss(samples, y)
                 return energy_scores.mean()
             return energy_loss_fn
