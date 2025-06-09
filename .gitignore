@@ -68,6 +68,9 @@ figures/
 **/figures/
 **/saved_models/
 
+# data files
+**/data/**
+
 # PyTorch model files
 *.pt
 *.pth 
