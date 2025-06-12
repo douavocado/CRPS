@@ -8,8 +8,11 @@ from pathlib import Path
 import torch
 import numpy as np
 
+# Add the CRPS directory to the Python path so we can import experiments
+crps_dir = Path(__file__).parent.parent.parent.parent
+sys.path.insert(0, str(crps_dir))
 
-from dataset import CFD2DDataset, create_cfd_dataloader, get_example_config
+from experiments.pdebench_experiments.dataset.dataset import CFD2DDataset, create_cfd_dataloader, get_example_config
 
 
 def test_basic_functionality():

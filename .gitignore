@@ -67,6 +67,7 @@ Thumbs.db
 figures/
 **/figures/
 **/saved_models/
+**/*.png
 
 # data files
 **/data/**
@@ -74,3 +75,6 @@ figures/
 # PyTorch model files
 *.pt
 *.pth 
+
+# PDEBench repository
+experiments/pdebench_experiments/PDEBench/
