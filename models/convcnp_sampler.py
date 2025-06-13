@@ -25,6 +25,8 @@ import torch.nn.functional as F
 from torchnaut.crps import EpsilonSampler, crps_loss_mv
 from torchnaut import crps
 
+from common.losses import crps_loss_general
+
 class SetConv(nn.Module):
     """
     A set convolution layer using an RBF kernel for 'off-the-grid' to 'on-the-grid' encoding.
@@ -222,21 +224,21 @@ class ConvCNPSampler(nn.Module):
         samples = samples_flat.view(batch_size, n_target_spatial, n_samples, self.time_predict)
         return samples.permute(0, 2, 1, 3) # (B, n_samples, N_out, T_out)
 
-    def crps_loss(self, input_data: torch.Tensor, input_coords: torch.Tensor,
+    def energy_score_loss(self, input_data: torch.Tensor, input_coords: torch.Tensor,
                   target_coords: torch.Tensor, target_data: torch.Tensor,
                   n_samples: int = 50) -> torch.Tensor:
         """
-        Computes the CRPS loss for the given data.
+        Computes the energy score loss for the given data.
 
         Args:
             input_data: Context values, (B, T_in, N_in, V_in).
             input_coords: Context coordinates, (B, N_in, 2).
             target_coords: Target coordinates, (B, N_out, 2).
             target_data: Ground truth target values, (B, T_out, N_out).
-            n_samples: Number of samples to use for CRPS calculation.
+            n_samples: Number of samples to use for energy score calculation.
 
         Returns:
-            Scalar CRPS loss.
+            Scalar energy score loss.
         """
         samples = self.forward(input_data, input_coords, target_coords, n_samples)
         # samples shape: (B, n_samples, N_out, T_out)
@@ -244,6 +246,31 @@ class ConvCNPSampler(nn.Module):
         samples = samples.permute(0, 2, 1, 3)  # (B, N_out, n_samples, T_out)
         y_true = target_data.permute(0, 2, 1) # (B, N_out, T_out)
         loss = crps_loss_mv(samples, y_true)
+        return loss.mean()
+
+    def crps_loss(self, input_data: torch.Tensor, input_coords: torch.Tensor,
+                  target_coords: torch.Tensor, target_data: torch.Tensor,
+                  n_samples: int = 50) -> torch.Tensor:
+        """
+        Computes the CRPS loss for the given data.
+        """
+        samples = self.forward(input_data, input_coords, target_coords, n_samples)
+        # samples shape: (B, n_samples, N_out, T_out)
+        # target_data shape: (B, T_out, N_out)
+        
+        # Reshape for CRPS calculation
+        # For CRPS, we need: yps [batch, num_samples, dims], y [batch, dims]
+        # We'll treat each spatial location as a separate batch element
+        B, n_samples, N_out, T_out = samples.shape
+        
+        # Reshape samples to (B * N_out, n_samples, T_out)
+        samples_reshaped = samples.permute(0, 2, 1, 3).reshape(B * N_out, n_samples, T_out)
+        
+        # Reshape target_data to (B * N_out, T_out)
+        target_reshaped = target_data.permute(0, 2, 1).reshape(B * N_out, T_out)
+        
+        # Compute CRPS loss
+        loss = crps_loss_general(samples_reshaped, target_reshaped)
         return loss.mean()
 
 

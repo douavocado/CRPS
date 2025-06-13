@@ -35,9 +35,9 @@ training:
   learning_rate: 0.001
   n_crps_samples: 10  # Number of samples for energy score/crps loss calculation
   num_workers: 4
-  patience: 1
-  loss_function: "crps"
+  patience: 3
+  loss_function: "energy_score"
 
 # Logging and saving
 logging:
-  save_dir: "experiments/pdebench_experiments/training/saved_models/convcnp_sampler" 
+  save_dir: "experiments/pdebench_experiments/training/saved_models/convcnp_sampler/energy_score" 

@@ -42,6 +42,7 @@ class CFD2DDataset(Dataset):
                 - time_predict: Number of prediction timesteps (m)
                 - input_spatial: Number of spatial points to use as input (-1 for all)
                 - target_spatial: Number of spatial points to predict (default: 1)
+                - n_samples: Number of samples to use from data file (-1 for all samples)
                 - split_ratios: Dict with 'train', 'val', 'test' ratios
             split: Which data split to use ('train', 'val', 'test')
             normalise: Whether to normalise the data
@@ -59,6 +60,7 @@ class CFD2DDataset(Dataset):
         self.time_predict = config.get('time_predict', 1)
         self.input_spatial = config.get('input_spatial', -1)  # -1 means all spatial points
         self.target_spatial = config.get('target_spatial', 1)
+        self.n_samples_config = config.get('n_samples', -1)  # -1 means all samples
         self.split_ratios = config.get('split_ratios', {'train': 0.7, 'val': 0.15, 'test': 0.15})
         
         # Validate configuration
@@ -75,6 +77,8 @@ class CFD2DDataset(Dataset):
         print(f"  Target variable: {self.target_variable}")
         print(f"  Time lag: {self.time_lag}, Time predict: {self.time_predict}")
         print(f"  Spatial sampling - Input: {self.input_spatial}, Target: {self.target_spatial}")
+        if self.n_samples_config != -1:
+            print(f"  Using {self.n_samples} out of {self.total_samples_in_file} available samples")
     
     def _validate_config(self):
         """Validate configuration parameters."""
@@ -95,6 +99,10 @@ class CFD2DDataset(Dataset):
         # Check spatial parameters
         if self.target_spatial < 1:
             raise ValueError("target_spatial must be >= 1")
+        
+        # Check n_samples parameter
+        if self.n_samples_config < -1 or self.n_samples_config == 0:
+            raise ValueError("n_samples must be -1 (for all samples) or a positive integer")
         
         # Check split ratios
         total_ratio = sum(self.split_ratios.values())
@@ -117,7 +125,7 @@ class CFD2DDataset(Dataset):
             self.spatial_shape = (len(self.y_coords), len(self.x_coords))  # (height, width)
             self.n_timesteps = len(self.t_coords) - 1  # Available timesteps for prediction
             
-            # Load variable data
+            # Load variable data and determine total samples available
             self.data = {}
             sample_shape = None
             
@@ -126,7 +134,6 @@ class CFD2DDataset(Dataset):
                     raise KeyError(f"Variable '{var}' not found in dataset")
                 
                 var_data = f[var][()]  # Shape: (n_samples, n_timesteps, height, width)
-                self.data[var] = var_data
                 
                 if sample_shape is None:
                     sample_shape = var_data.shape
@@ -134,7 +141,27 @@ class CFD2DDataset(Dataset):
                     raise ValueError(f"Variable '{var}' has shape {var_data.shape}, "
                                    f"expected {sample_shape}")
             
-            self.n_samples, self.data_n_timesteps, self.height, self.width = sample_shape
+            self.total_samples_in_file, self.data_n_timesteps, self.height, self.width = sample_shape
+            
+            # Determine how many samples to actually use
+            if self.n_samples_config == -1 or self.n_samples_config > self.total_samples_in_file:
+                self.n_samples = self.total_samples_in_file
+                self.sample_indices_to_load = np.arange(self.total_samples_in_file)
+                if self.n_samples_config > self.total_samples_in_file:
+                    warnings.warn(f"Requested {self.n_samples_config} samples but only {self.total_samples_in_file} "
+                                f"available in file. Using all {self.total_samples_in_file} samples.")
+            else:
+                self.n_samples = self.n_samples_config
+                # Randomly subsample indices with fixed seed for reproducibility
+                np.random.seed(42)
+                self.sample_indices_to_load = np.sort(np.random.choice(
+                    self.total_samples_in_file, size=self.n_samples, replace=False
+                ))
+            
+            # Load only the required samples for each variable
+            for var in self.variables:
+                var_data = f[var][self.sample_indices_to_load]  # Shape: (n_samples, n_timesteps, height, width)
+                self.data[var] = var_data
             
             # Validate temporal requirements
             min_required_timesteps = self.time_lag + self.time_predict
@@ -143,8 +170,12 @@ class CFD2DDataset(Dataset):
                                f"but need at least {min_required_timesteps} "
                                f"(time_lag={self.time_lag} + time_predict={self.time_predict})")
         
-        print(f"Data loaded: {self.n_samples} samples, {self.data_n_timesteps} timesteps, "
-              f"{self.height}x{self.width} spatial grid")
+        if self.n_samples < self.total_samples_in_file:
+            print(f"Data loaded: {self.n_samples} randomly sampled samples (out of {self.total_samples_in_file} available), "
+                  f"{self.data_n_timesteps} timesteps, {self.height}x{self.width} spatial grid")
+        else:
+            print(f"Data loaded: {self.n_samples} samples (all available), "
+                  f"{self.data_n_timesteps} timesteps, {self.height}x{self.width} spatial grid")
     
     def _setup_normalisation(self):
         """Setup normalisation statistics."""
@@ -376,6 +407,7 @@ def get_example_config() -> Dict:
         'time_predict': 3,  # Predict 3 future timesteps
         'input_spatial': 1024,  # Use 1024 random spatial points as input
         'target_spatial': 256,  # Predict at 256 spatial points
+        'n_samples': 1000,  # Use 1000 samples from the data file
         'split_ratios': {'train': 0.7, 'val': 0.15, 'test': 0.15}
     }
 

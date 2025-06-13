@@ -20,7 +20,7 @@ def crps_loss_general(yps, y):
     )
 
 
-def energy_score_loss(y_pred_samples, y_true):
+def energy_score_loss(y_pred_samples, y_true, norm_dim=False):
     """
     Compute energy score loss for multivariate samples.
     
@@ -30,6 +30,7 @@ def energy_score_loss(y_pred_samples, y_true):
     Args:
         y_pred_samples: Predicted samples [batch_size, n_samples, output_dim]
         y_true: True values [batch_size, output_dim]
+        norm_dim: Whether to normalise the energy score by the output dimension
     
     Returns:
         Energy score loss (lower is better)
@@ -63,6 +64,8 @@ def energy_score_loss(y_pred_samples, y_true):
     # Energy score
     energy_scores = first_term - second_term  # [batch_size]
     
+    if norm_dim:
+        energy_scores = energy_scores / output_dim
     return energy_scores
 
 

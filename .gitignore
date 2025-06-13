@@ -69,6 +69,11 @@ figures/
 **/saved_models/
 **/*.png
 
+
+# Results files
+**/results/**
+**/evaluation/**
+
 # data files
 **/data/**
 

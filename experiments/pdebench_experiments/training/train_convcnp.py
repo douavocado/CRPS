@@ -30,6 +30,9 @@ def train_one_epoch(model, dataloader, optimizer, device, config):
     total_loss = 0
     pbar = tqdm(dataloader, desc="Training", leave=False)
     
+    # Get loss function type from config
+    loss_function = config['training'].get('loss_function', 'crps')  # Default to CRPS
+    
     for batch in pbar:
         optimizer.zero_grad()
         
@@ -38,13 +41,25 @@ def train_one_epoch(model, dataloader, optimizer, device, config):
         target_data = batch['target_data'].to(device)
         target_coords = batch['target_coords'].to(device)
         
-        loss = model.crps_loss(
-            input_data,
-            input_coords,
-            target_coords,
-            target_data,
-            n_samples=config['training']['n_crps_samples']
-        )
+        # Select loss function based on configuration
+        if loss_function == 'energy_score':
+            loss = model.energy_score_loss(
+                input_data,
+                input_coords,
+                target_coords,
+                target_data,
+                n_samples=config['training']['n_crps_samples']
+            )
+        elif loss_function == 'crps':
+            loss = model.crps_loss(
+                input_data,
+                input_coords,
+                target_coords,
+                target_data,
+                n_samples=config['training']['n_crps_samples']
+            )
+        else:
+            raise ValueError(f"Unknown loss function: {loss_function}. Choose 'energy_score' or 'crps'.")
         
         loss.backward()
         optimizer.step()
@@ -64,19 +79,34 @@ def evaluate(model, dataloader, device, config):
     total_loss = 0
     pbar = tqdm(dataloader, desc="Evaluating", leave=False)
 
+    # Get loss function type from config
+    loss_function = config['training'].get('loss_function', 'crps')  # Default to CRPS
+
     for batch in pbar:
         input_data = batch['input_data'].to(device)
         input_coords = batch['input_coords'].to(device)
         target_data = batch['target_data'].to(device)
         target_coords = batch['target_coords'].to(device)
         
-        loss = model.crps_loss(
-            input_data,
-            input_coords,
-            target_coords,
-            target_data,
-            n_samples=config['training']['n_crps_samples']
-        )
+        # Select loss function based on configuration
+        if loss_function == 'energy_score':
+            loss = model.energy_score_loss(
+                input_data,
+                input_coords,
+                target_coords,
+                target_data,
+                n_samples=config['training']['n_crps_samples']
+            )
+        elif loss_function == 'crps':
+            loss = model.crps_loss(
+                input_data,
+                input_coords,
+                target_coords,
+                target_data,
+                n_samples=config['training']['n_crps_samples']
+            )
+        else:
+            raise ValueError(f"Unknown loss function: {loss_function}. Choose 'energy_score' or 'crps'.")
         
         total_loss += loss.item()
         pbar.set_postfix({'loss': loss.item()})
@@ -136,7 +166,10 @@ def main(config_path: str):
     patience = config['training'].get('patience', 10)  # Default patience of 10 epochs
     epochs_without_improvement = 0
     
-    print(f"\nStarting training with early stopping (patience: {patience})...")
+    # Get and print loss function
+    loss_function = config['training'].get('loss_function', 'crps')
+    print(f"\nUsing loss function: {loss_function}")
+    print(f"Starting training with early stopping (patience: {patience})...")
     for epoch in range(config['training']['epochs']):
         train_loss = train_one_epoch(model, train_loader, optimizer, device, config)
         val_loss = evaluate(model, val_loader, device, config)
