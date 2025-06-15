@@ -32,11 +32,14 @@ model:
 training:
   epochs: 100
   batch_size: 16
-  learning_rate: 0.001
+  learning_rate: 0.005
   n_crps_samples: 10  # Number of samples for energy score/crps loss calculation
   num_workers: 4
   patience: 3
   loss_function: "energy_score"
+  resume_from_checkpoint: "experiments/pdebench_experiments/training/saved_models/convcnp_sampler/energy_score/latest_checkpoint.pth"
+  checkpoint_save_frequency: 1
+  validate_config_on_resume: true  # Default: true
 
 # Logging and saving
 logging:

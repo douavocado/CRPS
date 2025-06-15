@@ -25,7 +25,7 @@ import torch.nn.functional as F
 from torchnaut.crps import EpsilonSampler, crps_loss_mv
 from torchnaut import crps
 
-from common.losses import crps_loss_general
+from common.losses import crps_loss_general, energy_score_loss
 
 class SetConv(nn.Module):
     """
@@ -228,7 +228,7 @@ class ConvCNPSampler(nn.Module):
                   target_coords: torch.Tensor, target_data: torch.Tensor,
                   n_samples: int = 50) -> torch.Tensor:
         """
-        Computes the energy score loss for the given data.
+        Computes the energy score loss for the given data using flattened approach.
 
         Args:
             input_data: Context values, (B, T_in, N_in, V_in).
@@ -240,13 +240,22 @@ class ConvCNPSampler(nn.Module):
         Returns:
             Scalar energy score loss.
         """
+        
         samples = self.forward(input_data, input_coords, target_coords, n_samples)
         # samples shape: (B, n_samples, N_out, T_out)
-        # need to transpose to: (B, N_out, n_samples, T_out)
-        samples = samples.permute(0, 2, 1, 3)  # (B, N_out, n_samples, T_out)
-        y_true = target_data.permute(0, 2, 1) # (B, N_out, T_out)
-        loss = crps_loss_mv(samples, y_true)
-        return loss.mean()
+        
+        batch_size, _, n_target_spatial, time_predict = samples.shape
+        
+        # Reshape samples for energy score: (batch_size, n_samples, output_dim)
+        # where output_dim = n_target_spatial * time_predict (flattened approach)
+        samples_energy = samples.reshape(batch_size, n_samples, n_target_spatial * time_predict)
+        
+        # Reshape target data: (batch_size, output_dim)
+        target_energy = target_data.permute(0, 2, 1).reshape(batch_size, n_target_spatial * time_predict)
+        
+        # Compute energy score loss using flattened spatial-temporal vectors
+        energy_scores = energy_score_loss(samples_energy, target_energy)  # (B,)
+        return energy_scores.mean()
 
     def crps_loss(self, input_data: torch.Tensor, input_coords: torch.Tensor,
                   target_coords: torch.Tensor, target_data: torch.Tensor,

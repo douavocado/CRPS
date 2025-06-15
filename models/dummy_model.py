@@ -112,10 +112,40 @@ class DummyModel(nn.Module):
         # input_data shape: (B, T_in, N_in, V_in)
         most_recent_values = input_data[:, -1, :, self.target_var_idx]  # (B, N_in)
         
-        # Interpolate from input locations to target locations
-        interpolated_values = self._rbf_interpolation(
-            input_coords, target_coords, most_recent_values
-        )  # (B, N_out)
+        # Initialize output tensor for interpolated values
+        interpolated_values = torch.zeros(batch_size, n_target_spatial, device=input_data.device)
+        
+        # For each batch, check for exact coordinate matches
+        for b in range(batch_size):
+            input_coords_b = input_coords[b]  # (N_in, 2)
+            target_coords_b = target_coords[b]  # (N_out, 2)
+            most_recent_values_b = most_recent_values[b]  # (N_in,)
+            
+            # Find exact matches between target and input coordinates
+            # Use a small tolerance for floating point comparison
+            tolerance = 1e-6
+            
+            # Compute pairwise distances to find exact matches
+            dists = torch.cdist(target_coords_b.unsqueeze(0), input_coords_b.unsqueeze(0)).squeeze(0)  # (N_out, N_in)
+            exact_matches = dists < tolerance  # (N_out, N_in)
+            
+            # For each target coordinate, check if it has an exact match
+            for t_idx in range(n_target_spatial):
+                match_indices = torch.where(exact_matches[t_idx])[0]
+                
+                if len(match_indices) > 0:
+                    # Use exact value from the first matching input coordinate
+                    interpolated_values[b, t_idx] = most_recent_values_b[match_indices[0]]
+                else:
+                    # No exact match found, need to interpolate
+                    # Use RBF interpolation for this single target point
+                    target_coord_single = target_coords_b[t_idx:t_idx+1]  # (1, 2)
+                    interpolated_val = self._rbf_interpolation(
+                        input_coords_b.unsqueeze(0),  # (1, N_in, 2)
+                        target_coord_single.unsqueeze(0),  # (1, 1, 2)
+                        most_recent_values_b.unsqueeze(0)  # (1, N_in)
+                    )  # (1, 1)
+                    interpolated_values[b, t_idx] = interpolated_val[0, 0]
         
         # Create predictions for all future timesteps (persistence forecast)
         # Repeat the interpolated values for all prediction timesteps
