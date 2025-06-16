@@ -4,7 +4,7 @@
 data:
   path: "experiments/pdebench_experiments/data/2D/2D_CFD/2D_CFD_rand_Eta1e-08_Zeta1e-08_M0.1_periodic_Train_16.hdf5"
   config:
-    variables: ['density']
+    variables: ['Vx', 'Vy', 'density']
     input_variables: ['Vx', 'Vy', 'density']
     target_variable: 'density'
     time_lag: 1
@@ -36,14 +36,12 @@ training:
   n_crps_samples: 10  # Number of samples for energy score/crps loss calculation
   num_workers: 4
   patience: 3
-  loss_function: "crps"
+  loss_function_config:
+    losses: ["crps_loss_general"]
   resume_from_checkpoint: "experiments/pdebench_experiments/training/saved_models/convcnp_sampler/crps_spatial_to_density/latest_checkpoint.pth"
   checkpoint_save_frequency: 1
   validate_config_on_resume: true  # Default: true
 
-# Logging and saving
-logging:
-  save_dir: "experiments/pdebench_experiments/training/saved_models/convcnp_sampler/crps_spatial_to_density"
 # Logging and saving
 logging:
   save_dir: "experiments/pdebench_experiments/training/saved_models/convcnp_sampler/crps_spatial_to_density" 

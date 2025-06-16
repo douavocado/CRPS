@@ -10,6 +10,7 @@ Features:
 - Resume training from checkpoint with full state restoration
 - Early stopping with configurable patience
 - Configurable checkpoint save frequency
+- Configurable loss function composition
 
 Usage:
     # Start fresh training
@@ -24,6 +25,21 @@ Configuration options for checkpointing:
         resume_from_checkpoint: "path/to/checkpoint.pth"  # Optional: resume from checkpoint (overridden by --resume)
         checkpoint_save_frequency: 5  # Save latest checkpoint every N epochs (default: 5)
         validate_config_on_resume: true  # Check config compatibility on resume (default: true)
+        
+Configuration options for loss function:
+    training:
+        loss_function_config:  # New configurable loss function
+            losses: ["energy_score_loss", "variogram_score_loss"]  # List of loss functions to combine
+            loss_function_args:  # Optional arguments for each loss function
+                energy_score_loss:
+                    norm_dim: true
+                variogram_score_loss:
+                    p: 2.0
+            coefficients:  # Optional coefficients for weighting loss functions
+                energy_score_loss: 1.0
+                variogram_score_loss: 0.5
+        # Legacy options (deprecated but still supported):
+        loss_function: "crps"  # Will be converted to new format if loss_function_config not provided
 """
 import argparse
 import yaml
@@ -38,18 +54,59 @@ sys.path.append(str(Path(__file__).resolve().parents[3]))
 
 from models.convcnp_sampler import ConvCNPSampler
 from experiments.pdebench_experiments.dataset.dataset import create_cfd_dataloader
+from common.losses import create_loss_function
 
 
-def train_one_epoch(model, dataloader, optimizer, device, config):
+def create_loss_fn_from_config(config):
+    """
+    Create a loss function from the training configuration.
+    Supports both new loss_function_config format and legacy loss_function format.
+    
+    Args:
+        config: Training configuration dictionary
+        
+    Returns:
+        A callable loss function
+    """
+    training_config = config['training']
+    
+    # Check if new loss_function_config is provided
+    if 'loss_function_config' in training_config:
+        loss_config = training_config['loss_function_config']
+        print(f"Using configured loss functions: {loss_config['losses']}")
+        if 'coefficients' in loss_config:
+            print(f"Loss coefficients: {loss_config['coefficients']}")
+        return create_loss_function(loss_config)
+    
+    # Fallback to legacy format
+    elif 'loss_function' in training_config:
+        legacy_loss = training_config['loss_function']
+        print(f"Using legacy loss function format: {legacy_loss}")
+        
+        # Convert legacy format to new format
+        if legacy_loss == 'crps':
+            loss_config = {'losses': ['crps_loss_general']}
+        elif legacy_loss == 'energy_score':
+            loss_config = {'losses': ['energy_score_loss']}
+        else:
+            raise ValueError(f"Unknown legacy loss function: {legacy_loss}")
+        
+        return create_loss_function(loss_config)
+    
+    else:
+        # Default to CRPS if nothing specified
+        print("No loss function specified, defaulting to CRPS")
+        loss_config = {'losses': ['crps_loss_general']}
+        return create_loss_function(loss_config)
+
+
+def train_one_epoch(model, dataloader, optimizer, device, loss_fn, n_samples):
     """
     Trains the model for one epoch.
     """
     model.train()
     total_loss = 0
     pbar = tqdm(dataloader, desc="Training", leave=False)
-    
-    # Get loss function type from config
-    loss_function = config['training'].get('loss_function', 'crps')  # Default to CRPS
     
     for batch in pbar:
         optimizer.zero_grad()
@@ -59,25 +116,16 @@ def train_one_epoch(model, dataloader, optimizer, device, config):
         target_data = batch['target_data'].to(device)
         target_coords = batch['target_coords'].to(device)
         
-        # Select loss function based on configuration
-        if loss_function == 'energy_score':
-            loss = model.energy_score_loss(
-                input_data,
-                input_coords,
-                target_coords,
-                target_data,
-                n_samples=config['training']['n_crps_samples']
-            )
-        elif loss_function == 'crps':
-            loss = model.crps_loss(
-                input_data,
-                input_coords,
-                target_coords,
-                target_data,
-                n_samples=config['training']['n_crps_samples']
-            )
-        else:
-            raise ValueError(f"Unknown loss function: {loss_function}. Choose 'energy_score' or 'crps'.")
+        # Get samples from the model
+        samples = model.sample(
+            input_data,
+            input_coords,
+            target_coords,
+            n_samples=n_samples
+        )
+        
+        # Compute loss using the configured loss function
+        loss = loss_fn(samples, target_data).mean()  # Average over batch
         
         loss.backward()
         optimizer.step()
@@ -89,7 +137,7 @@ def train_one_epoch(model, dataloader, optimizer, device, config):
 
 
 @torch.no_grad()
-def evaluate(model, dataloader, device, config):
+def evaluate(model, dataloader, device, loss_fn, n_samples):
     """
     Evaluates the model on the validation or test set.
     """
@@ -97,34 +145,22 @@ def evaluate(model, dataloader, device, config):
     total_loss = 0
     pbar = tqdm(dataloader, desc="Evaluating", leave=False)
 
-    # Get loss function type from config
-    loss_function = config['training'].get('loss_function', 'crps')  # Default to CRPS
-
     for batch in pbar:
         input_data = batch['input_data'].to(device)
         input_coords = batch['input_coords'].to(device)
         target_data = batch['target_data'].to(device)
         target_coords = batch['target_coords'].to(device)
         
-        # Select loss function based on configuration
-        if loss_function == 'energy_score':
-            loss = model.energy_score_loss(
-                input_data,
-                input_coords,
-                target_coords,
-                target_data,
-                n_samples=config['training']['n_crps_samples']
-            )
-        elif loss_function == 'crps':
-            loss = model.crps_loss(
-                input_data,
-                input_coords,
-                target_coords,
-                target_data,
-                n_samples=config['training']['n_crps_samples']
-            )
-        else:
-            raise ValueError(f"Unknown loss function: {loss_function}. Choose 'energy_score' or 'crps'.")
+        # Get samples from the model
+        samples = model.sample(
+            input_data,
+            input_coords,
+            target_coords,
+            n_samples=n_samples
+        )
+        
+        # Compute loss using the configured loss function
+        loss = loss_fn(samples, target_data).mean()  # Average over batch
         
         total_loss += loss.item()
         pbar.set_postfix({'loss': loss.item()})
@@ -240,6 +276,10 @@ def main(config_path: str, resume_checkpoint: str = None):
     model = ConvCNPSampler(**model_config).to(device)
     print(f"Model created with {sum(p.numel() for p in model.parameters())/1e6:.2f}M parameters.")
 
+    # Create loss function from config
+    loss_fn = create_loss_fn_from_config(config)
+    n_samples = config['training']['n_crps_samples']  # Number of samples for loss computation
+
     # Optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=config['training']['learning_rate'])
 
@@ -282,9 +322,10 @@ def main(config_path: str, resume_checkpoint: str = None):
     # Early stopping parameters
     patience = config['training'].get('patience', 10)  # Default patience of 10 epochs
     
-    # Get and print loss function
-    loss_function = config['training'].get('loss_function', 'crps')
-    print(f"\nUsing loss function: {loss_function}")
+    # Print training setup information
+    print(f"\nTraining setup:")
+    print(f"- Number of samples for loss computation: {n_samples}")
+    
     if start_epoch > 0:
         print(f"Resuming training from epoch {start_epoch + 1} with early stopping (patience: {patience})...")
     else:
@@ -293,8 +334,8 @@ def main(config_path: str, resume_checkpoint: str = None):
     # Training loop
     total_epochs = config['training']['epochs']
     for epoch in range(start_epoch, total_epochs):
-        train_loss = train_one_epoch(model, train_loader, optimizer, device, config)
-        val_loss = evaluate(model, val_loader, device, config)
+        train_loss = train_one_epoch(model, train_loader, optimizer, device, loss_fn, n_samples)
+        val_loss = evaluate(model, val_loader, device, loss_fn, n_samples)
         
         print(f"Epoch {epoch+1}/{total_epochs} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}")
 

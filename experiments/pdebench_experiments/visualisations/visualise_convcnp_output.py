@@ -21,6 +21,7 @@ import os
 import sys
 import numpy as np
 import matplotlib.pyplot as plt
+from scipy.interpolate import griddata
 
 # Adjusting python path to allow imports from parent directories
 # This assumes the script is in experiments/pdebench_experiments/visualisations
@@ -29,6 +30,108 @@ sys.path.append(str(project_root))
 
 from models.convcnp_sampler import ConvCNPSampler
 from experiments.pdebench_experiments.dataset.dataset import CFD2DDataset
+
+
+def infer_grid_size_from_coords(coords: np.ndarray, min_grid_size: int = 16, max_grid_size: int = 256):
+    """
+    Infer appropriate grid size from coordinate spacing.
+    
+    Args:
+        coords: Coordinate array, shape (N, 2) with x, y coordinates
+        min_grid_size: Minimum allowed grid size
+        max_grid_size: Maximum allowed grid size
+        
+    Returns:
+        Inferred grid size based on coordinate spacing
+    """
+    if len(coords) < 2:
+        return min_grid_size
+    
+    # Calculate extent of coordinates
+    x_min, x_max = coords[:, 0].min(), coords[:, 0].max()
+    y_min, y_max = coords[:, 1].min(), coords[:, 1].max()
+    
+    x_range = x_max - x_min
+    y_range = y_max - y_min
+    
+    if x_range == 0 or y_range == 0:
+        return min_grid_size
+    
+    # Find minimum spacing in x and y directions
+    unique_x = np.unique(coords[:, 0])
+    unique_y = np.unique(coords[:, 1])
+    
+    # Calculate minimum differences (grid spacing)
+    if len(unique_x) > 1:
+        min_dx = np.min(np.diff(unique_x))
+    else:
+        min_dx = x_range
+        
+    if len(unique_y) > 1:
+        min_dy = np.min(np.diff(unique_y))
+    else:
+        min_dy = y_range
+    
+    # Estimate grid size based on range/spacing
+    # Use the smaller of the two dimensions to ensure square pixels
+    min_spacing = min(min_dx, min_dy)
+    if min_spacing > 0:
+        # Calculate how many grid points we need for each dimension
+        grid_size_x = int(np.ceil(x_range / min_spacing)) + 1
+        grid_size_y = int(np.ceil(y_range / min_spacing)) + 1
+        
+        # Use the maximum to ensure we capture the full resolution
+        inferred_size = max(grid_size_x, grid_size_y)
+        
+        # Apply constraints
+        inferred_size = max(min_grid_size, min(inferred_size, max_grid_size))
+    else:
+        inferred_size = min_grid_size
+    
+    return inferred_size
+
+
+def create_grid_from_coords(coords: np.ndarray, values: np.ndarray, grid_size: int = None):
+    """
+    Convert coordinate-based data to a regular grid for visualisation.
+    
+    Args:
+        coords: Coordinate array, shape (N, 2) with x, y coordinates
+        values: Values at coordinates, shape (N,)
+        grid_size: Size of the output grid. If None, will be inferred from coordinate spacing
+        
+    Returns:
+        2D grid of interpolated values, shape (grid_size, grid_size)
+    """
+    # Infer grid size if not provided
+    if grid_size is None:
+        grid_size = infer_grid_size_from_coords(coords)
+    
+    # Define regular grid
+    x_min, x_max = coords[:, 0].min(), coords[:, 0].max()
+    y_min, y_max = coords[:, 1].min(), coords[:, 1].max()
+    
+    # Add small padding to avoid edge issues
+    x_range = x_max - x_min
+    y_range = y_max - y_min
+    padding = 0.05
+    
+    x_min -= padding * x_range
+    x_max += padding * x_range
+    y_min -= padding * y_range
+    y_max += padding * y_range
+    
+    xi = np.linspace(x_min, x_max, grid_size)
+    yi = np.linspace(y_min, y_max, grid_size)
+    xi_grid, yi_grid = np.meshgrid(xi, yi)
+    
+    # Interpolate values to grid
+    grid_values = griddata(
+        coords, values, (xi_grid, yi_grid), 
+        method='cubic', fill_value=np.nan
+    )
+    
+    return grid_values, (x_min, x_max, y_min, y_max)
 
 
 def visualise_predictions(
@@ -78,61 +181,62 @@ def visualise_predictions(
         col_idx = 0
         
         # Plot input variables (using the most recent timestep as reference)
-        input_x = input_coords[:, 0]
-        input_y = input_coords[:, 1]
-        
         for var_idx, var_name in enumerate(input_variables):
             # Use the most recent input timestep (time_lag - 1)
             input_values = input_data[time_lag - 1, :, var_idx]
             
+            # Convert to grid
+            grid_data, extent = create_grid_from_coords(input_coords, input_values)
+            
             ax = axes[t, col_idx]
-            sc = ax.scatter(input_x, input_y, c=input_values, cmap='viridis')
-            plt.colorbar(sc, ax=ax)
+            im = ax.imshow(grid_data, extent=extent, origin='lower', cmap='viridis', aspect='equal')
+            plt.colorbar(im, ax=ax)
             ax.set_title(f"Input: {var_name}")
             ax.set_xlabel("x-coordinate")
             ax.set_ylabel("y-coordinate")
-            ax.set_aspect('equal', adjustable='box')
             col_idx += 1
         
         # Plot target predictions
-        x = target_coords[:, 0]
-        y = target_coords[:, 1]
-        
         gt = ground_truth[t, :]
         mean_pred = prediction_mean[:, t]
         std_pred = prediction_std[:, t]
         
-        vmin = min(gt.min(), mean_pred.min())
-        vmax = max(gt.max(), mean_pred.max())
+        # Create grids for target data
+        gt_grid, target_extent = create_grid_from_coords(target_coords, gt)
+        mean_grid, _ = create_grid_from_coords(target_coords, mean_pred)
+        std_grid, _ = create_grid_from_coords(target_coords, std_pred)
+        
+        # Calculate vmin/vmax for consistent scaling
+        vmin = min(np.nanmin(gt_grid), np.nanmin(mean_grid))
+        vmax = max(np.nanmax(gt_grid), np.nanmax(mean_grid))
         
         # Plot Ground Truth
         ax = axes[t, col_idx]
-        sc = ax.scatter(x, y, c=gt, cmap='viridis', vmin=vmin, vmax=vmax)
-        plt.colorbar(sc, ax=ax)
+        im = ax.imshow(gt_grid, extent=target_extent, origin='lower', cmap='viridis', 
+                      vmin=vmin, vmax=vmax, aspect='equal')
+        plt.colorbar(im, ax=ax)
         ax.set_title(f"Ground Truth (t={t+1})")
         ax.set_xlabel("x-coordinate")
         ax.set_ylabel("y-coordinate")
-        ax.set_aspect('equal', adjustable='box')
         col_idx += 1
         
         # Plot Mean Prediction
         ax = axes[t, col_idx]
-        sc = ax.scatter(x, y, c=mean_pred, cmap='viridis', vmin=vmin, vmax=vmax)
-        plt.colorbar(sc, ax=ax)
+        im = ax.imshow(mean_grid, extent=target_extent, origin='lower', cmap='viridis', 
+                      vmin=vmin, vmax=vmax, aspect='equal')
+        plt.colorbar(im, ax=ax)
         ax.set_title(f"Mean Prediction (t={t+1})")
         ax.set_xlabel("x-coordinate")
         ax.set_ylabel("y-coordinate")
-        ax.set_aspect('equal', adjustable='box')
         col_idx += 1
         
         # Plot Uncertainty (Std Dev)
         ax = axes[t, col_idx]
-        sc = ax.scatter(x, y, c=std_pred, cmap='plasma')
-        plt.colorbar(sc, ax=ax)
+        im = ax.imshow(std_grid, extent=target_extent, origin='lower', cmap='plasma', aspect='equal')
+        plt.colorbar(im, ax=ax)
         ax.set_title(f"Prediction Uncertainty (Std Dev, t={t+1})")
         ax.set_xlabel("x-coordinate")
         ax.set_ylabel("y-coordinate")
-        ax.set_aspect('equal', adjustable='box')
         
     plt.tight_layout(rect=[0, 0.03, 1, 0.95])
     output_path.parent.mkdir(parents=True, exist_ok=True)

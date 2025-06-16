@@ -36,10 +36,10 @@ def get_data_path() -> Optional[Path]:
     """
     # Common locations for CFD data
     possible_paths = [
-        Path("../data/2D_CFD_rand_Eta1e-08_Zeta1e-08_M0.1_periodic_Train.hdf5"),
-        Path("../data/2D/2D_CFD/2D_CFD_rand_Eta1e-08_Zeta1e-08_M0.1_periodic_Train.hdf5"),
-        Path("data/2D_CFD_rand_Eta1e-08_Zeta1e-08_M0.1_periodic_Train.hdf5"),
-        Path("../pdebench_experiments/data/2D_CFD_rand_Eta1e-08_Zeta1e-08_M0.1_periodic_Train.hdf5"),
+        Path("experiments/pdebench_experiments/data/2D_CFD_rand_Eta1e-08_Zeta1e-08_M0.1_periodic_Train_16.hdf5"),
+        Path("experiments/pdebench_experiments/data/2D/2D_CFD/2D_CFD_rand_Eta1e-08_Zeta1e-08_M0.1_periodic_Train_16.hdf5"),
+        Path("experiments/pdebench_experiments/data/2D_CFD_rand_Eta1e-08_Zeta1e-08_M0.1_periodic_Train_16.hdf5"),
+        Path("experiments/pdebench_experiments/data/2D_CFD_rand_Eta1e-08_Zeta1e-08_M0.1_periodic_Train_16.hdf5"),
     ]
     
     for path in possible_paths:
@@ -370,9 +370,9 @@ def main():
     if data_path is None:
         print("No CFD data file found!")
         print("\nPlease ensure you have a CFD HDF5 file in one of these locations:")
-        print("  - ../data/2D_CFD_rand_Eta1e-08_Zeta1e-08_M0.1_periodic_Train.hdf5")
-        print("  - ../data/2D/2D_CFD/2D_CFD_rand_Eta1e-08_Zeta1e-08_M0.1_periodic_Train.hdf5")
-        print("  - data/2D_CFD_rand_Eta1e-08_Zeta1e-08_M0.1_periodic_Train.hdf5")
+        print("  - experiments/pdebench_experiments/data/2D/2D_CFD/2D_CFD_rand_Eta1e-08_Zeta1e-08_M0.1_periodic_Train_16.hdf5")
+        print("  - experiments/pdebench_experiments/data/2D_CFD_rand_Eta1e-08_Zeta1e-08_M0.1_periodic_Train_16.hdf5")
+        print("  - experiments/pdebench_experiments/data/2D_CFD_rand_Eta1e-08_Zeta1e-08_M0.1_periodic_Train_16.hdf5")
         print("\nOr update the paths in get_data_path() function.")
         return
     
@@ -398,7 +398,7 @@ def main():
     # Set output directory if saving to files
     output_dir = None
     if choice in ['2', '5']:
-        output_dir = Path("../visualisations/data_visualisations")
+        output_dir = Path("experiments/pdebench_experiments/visualisations/data_visualisations")
         output_dir.mkdir(parents=True, exist_ok=True)
         print(f"Output directory: {output_dir.absolute()}")
     
