@@ -1,0 +1,50 @@
+# Configuration for training the ConvCNP Sampler model
+
+# Data configuration
+data:
+  path: "experiments/pdebench_experiments/data/2D/2D_CFD/2D_CFD_rand_Eta1e-08_Zeta1e-08_M0.1_periodic_Train_16.hdf5"
+  config:
+    variables: ['Vx', 'Vy', 'density']
+    input_variables: ['Vx', 'Vy', 'density']
+    target_variable: 'density'
+    time_lag: 1
+    time_predict: 1
+    input_spatial: -1 # -1 for full grid
+    target_spatial: 256
+    n_samples: 200  # -1 to use all samples, or specify number of samples to use
+    split_ratios:
+      train: 0.7
+      val: 0.15
+      test: 0.15
+
+# Model configuration for ConvCNPSampler
+# n_input_vars, time_lag, and time_predict are derived from data config in the script
+model:
+  latent_dim: 16
+  cnn_hidden_channels: 64
+  decoder_hidden_layers: 2
+  decoder_hidden_size: 128
+  grid_size: 64
+  length_scale: 0.1
+  n_cnn_blocks: 4
+
+# Training configuration
+training:
+  epochs: 100
+  batch_size: 16
+  learning_rate: 0.0005
+  n_crps_samples: 10  # Number of samples for energy score/crps loss calculation
+  num_workers: 4
+  patience: 5
+  loss_function_config:
+    losses: ["energy_score_loss", "variogram_score_loss"]
+    coefficients:
+      energy_score_loss: 1.0
+      variogram_score_loss: 0.0005
+  resume_from_checkpoint: "experiments/pdebench_experiments/training/saved_models/convcnp_sampler/energy_variogram/latest_checkpoint.pth"
+  checkpoint_save_frequency: 1
+  validate_config_on_resume: true  # Default: true
+
+# Logging and saving
+logging:
+  save_dir: "experiments/pdebench_experiments/training/saved_models/convcnp_sampler/energy_variogram" 

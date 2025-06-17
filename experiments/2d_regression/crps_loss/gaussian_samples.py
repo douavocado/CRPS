@@ -288,13 +288,13 @@ def main():
         'data_size': 2000,
         
         # Model selection - Change this to switch between models
-        'model_type': 'SimpleAffineNormal',  # Options: 'MLPSampler' or 'SimpleAffineNormal'
+        'model_type': 'MLPSampler',  # Options: 'MLPSampler' or 'SimpleAffineNormal'
         
         # Model parameters for MLPSampler (ignored if using SimpleAffineNormal)
         'hidden_size': 64,
-        'latent_dim': 10,
+        'latent_dim': 1,
         'n_layers': 3,
-        'dropout_rate': 0.1,
+        'dropout_rate': 0.0,
         'sample_layer_index': 1,
         'zero_inputs': True,
         'non_linear': False,

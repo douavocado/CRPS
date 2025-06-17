@@ -100,12 +100,13 @@ def create_loss_fn_from_config(config):
         return create_loss_function(loss_config)
 
 
-def train_one_epoch(model, dataloader, optimizer, device, loss_fn, n_samples):
+def train_one_epoch(model, dataloader, optimizer, device, loss_fn, n_samples, use_multiple_losses=False):
     """
     Trains the model for one epoch.
     """
     model.train()
     total_loss = 0
+    total_individual_losses = {}
     pbar = tqdm(dataloader, desc="Training", leave=False)
     
     for batch in pbar:
@@ -117,32 +118,55 @@ def train_one_epoch(model, dataloader, optimizer, device, loss_fn, n_samples):
         target_coords = batch['target_coords'].to(device)
         
         # Get samples from the model
-        samples = model.sample(
+        samples = model.forward(
             input_data,
             input_coords,
             target_coords,
             n_samples=n_samples
         )
         
+        # Reshape tensors for loss computation
+        # samples shape: (B, n_samples, N_out, T_out) -> (B, n_samples, N_out * T_out)
+        batch_size, n_samples_dim, n_spatial, n_temporal = samples.shape
+        samples_reshaped = samples.reshape(batch_size, n_samples_dim, n_spatial * n_temporal)
+        
+        # target_data shape: (B, T_out, N_out) -> (B, N_out * T_out)
+        target_reshaped = target_data.permute(0, 2, 1).reshape(batch_size, n_spatial * n_temporal)
+        
         # Compute loss using the configured loss function
-        loss = loss_fn(samples, target_data).mean()  # Average over batch
+        if use_multiple_losses:
+            loss, individual_losses = loss_fn(samples_reshaped, target_reshaped, return_components=True)
+            loss = loss.mean()  # Average over batch
+            
+            # Accumulate individual losses
+            for loss_name, loss_value in individual_losses.items():
+                if loss_name not in total_individual_losses:
+                    total_individual_losses[loss_name] = 0
+                total_individual_losses[loss_name] += loss_value
+        else:
+            loss = loss_fn(samples_reshaped, target_reshaped).mean()  # Average over batch
         
         loss.backward()
         optimizer.step()
         
         total_loss += loss.item()
         pbar.set_postfix({'loss': loss.item()})
+    
+    # Average individual losses over batches
+    for loss_name in total_individual_losses:
+        total_individual_losses[loss_name] /= len(dataloader)
         
-    return total_loss / len(dataloader)
+    return total_loss / len(dataloader), total_individual_losses
 
 
 @torch.no_grad()
-def evaluate(model, dataloader, device, loss_fn, n_samples):
+def evaluate(model, dataloader, device, loss_fn, n_samples, use_multiple_losses=False):
     """
     Evaluates the model on the validation or test set.
     """
     model.eval()
     total_loss = 0
+    total_individual_losses = {}
     pbar = tqdm(dataloader, desc="Evaluating", leave=False)
 
     for batch in pbar:
@@ -152,20 +176,42 @@ def evaluate(model, dataloader, device, loss_fn, n_samples):
         target_coords = batch['target_coords'].to(device)
         
         # Get samples from the model
-        samples = model.sample(
+        samples = model.forward(
             input_data,
             input_coords,
             target_coords,
             n_samples=n_samples
         )
         
+        # Reshape tensors for loss computation
+        # samples shape: (B, n_samples, N_out, T_out) -> (B, n_samples, N_out * T_out)
+        batch_size, n_samples_dim, n_spatial, n_temporal = samples.shape
+        samples_reshaped = samples.reshape(batch_size, n_samples_dim, n_spatial * n_temporal)
+        
+        # target_data shape: (B, T_out, N_out) -> (B, N_out * T_out)
+        target_reshaped = target_data.permute(0, 2, 1).reshape(batch_size, n_spatial * n_temporal)
+        
         # Compute loss using the configured loss function
-        loss = loss_fn(samples, target_data).mean()  # Average over batch
+        if use_multiple_losses:
+            loss, individual_losses = loss_fn(samples_reshaped, target_reshaped, return_components=True)
+            loss = loss.mean()  # Average over batch
+            
+            # Accumulate individual losses
+            for loss_name, loss_value in individual_losses.items():
+                if loss_name not in total_individual_losses:
+                    total_individual_losses[loss_name] = 0
+                total_individual_losses[loss_name] += loss_value
+        else:
+            loss = loss_fn(samples_reshaped, target_reshaped).mean()  # Average over batch
         
         total_loss += loss.item()
         pbar.set_postfix({'loss': loss.item()})
+    
+    # Average individual losses over batches
+    for loss_name in total_individual_losses:
+        total_individual_losses[loss_name] /= len(dataloader)
         
-    return total_loss / len(dataloader)
+    return total_loss / len(dataloader), total_individual_losses
 
 
 def save_checkpoint(model, optimizer, epoch, best_val_loss, epochs_without_improvement, save_dir, config, is_best=False):
@@ -279,6 +325,15 @@ def main(config_path: str, resume_checkpoint: str = None):
     # Create loss function from config
     loss_fn = create_loss_fn_from_config(config)
     n_samples = config['training']['n_crps_samples']  # Number of samples for loss computation
+    
+    # Determine if we're using multiple losses for detailed logging
+    training_config = config['training']
+    use_multiple_losses = False
+    if 'loss_function_config' in training_config:
+        loss_config = training_config['loss_function_config']
+        use_multiple_losses = len(loss_config['losses']) > 1
+    elif 'loss_function' in training_config:
+        use_multiple_losses = False  # Legacy format always uses single loss
 
     # Optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=config['training']['learning_rate'])
@@ -325,6 +380,8 @@ def main(config_path: str, resume_checkpoint: str = None):
     # Print training setup information
     print(f"\nTraining setup:")
     print(f"- Number of samples for loss computation: {n_samples}")
+    if use_multiple_losses:
+        print("- Individual loss components will be displayed during training")
     
     if start_epoch > 0:
         print(f"Resuming training from epoch {start_epoch + 1} with early stopping (patience: {patience})...")
@@ -334,10 +391,23 @@ def main(config_path: str, resume_checkpoint: str = None):
     # Training loop
     total_epochs = config['training']['epochs']
     for epoch in range(start_epoch, total_epochs):
-        train_loss = train_one_epoch(model, train_loader, optimizer, device, loss_fn, n_samples)
-        val_loss = evaluate(model, val_loader, device, loss_fn, n_samples)
+        train_loss, train_individual_losses = train_one_epoch(model, train_loader, optimizer, device, loss_fn, n_samples, use_multiple_losses)
+        val_loss, val_individual_losses = evaluate(model, val_loader, device, loss_fn, n_samples, use_multiple_losses)
         
+        # Print epoch results
         print(f"Epoch {epoch+1}/{total_epochs} | Train Loss: {train_loss:.4f} | Val Loss: {val_loss:.4f}")
+        
+        # Print individual loss components if using multiple losses
+        if use_multiple_losses and train_individual_losses:
+            print("  Individual Train Losses:", end="")
+            for loss_name, loss_value in train_individual_losses.items():
+                print(f" {loss_name}: {loss_value:.4f}", end="")
+            print()
+            
+            print("  Individual Val Losses:  ", end="")
+            for loss_name, loss_value in val_individual_losses.items():
+                print(f" {loss_name}: {loss_value:.4f}", end="")
+            print()
 
         # Check if this is the best model
         is_best = val_loss < best_val_loss

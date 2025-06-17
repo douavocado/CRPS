@@ -283,12 +283,12 @@ def main():
         
         # Model parameters for MLPSampler (ignored if using SimpleAffineNormal)
         'hidden_size': 64,
-        'latent_dim': 3,
-        'n_layers': 4,
+        'latent_dim': 1,
+        'n_layers': 3,
         'dropout_rate': 0.0,
         'sample_layer_index': 1,
         'zero_inputs': True,
-        'non_linear': True,
+        'non_linear': False,
         
         # Training parameters
         'n_epochs': 100,

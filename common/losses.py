@@ -22,10 +22,12 @@ def crps_loss_general(yps, y):
 
 def energy_score_loss(y_pred_samples, y_true, norm_dim=False):
     """
-    Compute energy score loss for multivariate samples.
+    Compute energy score loss for multivariate samples using biased Monte Carlo estimation.
     
     Energy Score = 2 * E[||Y - X||] - E[||X - X'||]
     where Y is true value, X and X' are independent samples from prediction
+    
+    Uses unbiased Monte Carlo estimate for E[||X - X'||] (includes diagonal terms).
     
     Args:
         y_pred_samples: Predicted samples [batch_size, n_samples, output_dim]
@@ -56,10 +58,10 @@ def energy_score_loss(y_pred_samples, y_true, norm_dim=False):
     diff_samples = samples_i - samples_j  # [batch_size, n_samples, n_samples, output_dim]
     norm_samples = torch.norm(diff_samples, dim=3)  # [batch_size, n_samples, n_samples]
     
-    # Average over all pairs (excluding diagonal)
-    mask = ~torch.eye(n_samples, dtype=torch.bool, device=y_pred_samples.device)
-    norm_samples_masked = norm_samples[:, mask]  # [batch_size, n_samples*(n_samples-1)]
-    second_term = torch.mean(norm_samples_masked, dim=1)  # [batch_size]
+    # Biased Monte Carlo estimate: include all pairs (including diagonal)
+    second_term = torch.mean(norm_samples, dim=(1, 2))  # [batch_size]
+    # Now multiply by n_samples/(n_samples-1) to get unbiased estimate
+    second_term = second_term * (n_samples / (n_samples - 1))
     
     # Energy score
     energy_scores = first_term - second_term  # [batch_size]
@@ -142,6 +144,113 @@ def variogram_score_loss(y_pred_samples, y_true, weights=None, p=1.0, coords=Non
     
     return variogram_scores
 
+def kernel_score_loss(y_pred_samples, y_true, kernel_type='gaussian', **kwargs):
+    """
+    Compute kernel score loss for multivariate samples.
+    
+    The kernel score is defined as:
+    S(P,y) = E_{X,X'~P} K(X,X') - 2 * E_{X~P} K(X,y)
+    where K is a kernel function.
+
+    Uses biased Monte Carlo estimate for E[K(X,X')].
+
+    Args:
+        y_pred_samples: Predicted samples [batch_size, n_samples, output_dim]
+        y_true: True values [batch_size, output_dim]
+        kernel_type: Type of kernel to use ('gaussian' or 'matern')
+        **kwargs: Additional keyword arguments for the kernel function:
+            - sigma: Kernel bandwidth parameter (default: 1.0)
+            - nu: Smoothness parameter for Matérn kernel (default: 1.5)
+
+    Returns:
+        Kernel score loss (lower is better) [batch_size]
+    """
+    batch_size, n_samples, output_dim = y_pred_samples.shape
+    device = y_pred_samples.device
+    
+    # Extract kernel parameters
+    sigma = kwargs.get('sigma', 1.0)
+    nu = kwargs.get('nu', 1.5)  # Only used for Matérn kernel
+    
+    def gaussian_kernel(x1, x2, sigma=1.0):
+        """Gaussian (RBF) kernel: K(x1, x2) = exp(-||x1 - x2||^2 / (2 * sigma^2))"""
+        squared_dist = torch.sum((x1 - x2) ** 2, dim=-1)
+        return torch.exp(-squared_dist / (2 * sigma ** 2))
+    
+    def matern_kernel(x1, x2, sigma=1.0, nu=1.5):
+        """Matérn kernel with smoothness parameter nu"""
+        dist = torch.norm(x1 - x2, dim=-1)
+        scaled_dist = torch.sqrt(2 * nu) * dist / sigma
+        
+        if nu == 0.5:
+            # Exponential kernel
+            return torch.exp(-scaled_dist)
+        elif nu == 1.5:
+            # Matérn 3/2
+            return (1 + scaled_dist) * torch.exp(-scaled_dist)
+        elif nu == 2.5:
+            # Matérn 5/2
+            return (1 + scaled_dist + (scaled_dist ** 2) / 3) * torch.exp(-scaled_dist)
+        else:
+            # General Matérn kernel (more computationally expensive)
+            from math import gamma
+            import torch.special
+            
+            # Handle the case where distance is 0
+            zero_mask = (scaled_dist == 0)
+            scaled_dist = torch.where(zero_mask, torch.tensor(1e-8, device=device), scaled_dist)
+            
+            coeff = (2 ** (1 - nu)) / gamma(nu)
+            bessel_term = torch.special.modified_bessel_k(nu, scaled_dist)
+            kernel_val = coeff * (scaled_dist ** nu) * bessel_term
+            
+            # Set kernel value to 1 where distance was originally 0
+            kernel_val = torch.where(zero_mask, torch.tensor(1.0, device=device), kernel_val)
+            return kernel_val
+    
+    # Select kernel function
+    if kernel_type == 'gaussian':
+        kernel_fn = lambda x1, x2: gaussian_kernel(x1, x2, sigma=sigma)
+    elif kernel_type == 'matern':
+        kernel_fn = lambda x1, x2: matern_kernel(x1, x2, sigma=sigma, nu=nu)
+    else:
+        raise ValueError(f"Unknown kernel type: {kernel_type}. Available options: 'gaussian', 'matern'")
+    
+    # First term: E_{X,X'~P} K(X,X') using biased Monte Carlo estimate
+    # Compute all pairwise kernel values between samples (including diagonal)
+    samples_expanded_i = y_pred_samples.unsqueeze(2)  # [batch_size, n_samples, 1, output_dim]
+    samples_expanded_j = y_pred_samples.unsqueeze(1)  # [batch_size, 1, n_samples, output_dim]
+    
+    # Reshape for kernel computation
+    samples_i_flat = samples_expanded_i.expand(-1, -1, n_samples, -1).reshape(-1, output_dim)
+    samples_j_flat = samples_expanded_j.expand(-1, n_samples, -1, -1).reshape(-1, output_dim)
+    
+    # Compute kernel values
+    kernel_values_flat = kernel_fn(samples_i_flat, samples_j_flat)  # [batch_size * n_samples * n_samples]
+    kernel_values = kernel_values_flat.reshape(batch_size, n_samples, n_samples)
+    
+    # Biased Monte Carlo estimate: include all pairs (including diagonal)
+    first_term = torch.mean(kernel_values, dim=(1, 2))  # [batch_size]
+    
+    # Second term: 2 * E_{X~P} K(X,y)
+    # Expand y_true to match samples shape
+    y_true_expanded = y_true.unsqueeze(1).expand(-1, n_samples, -1)  # [batch_size, n_samples, output_dim]
+    
+    # Reshape for kernel computation
+    samples_flat = y_pred_samples.reshape(-1, output_dim)  # [batch_size * n_samples, output_dim]
+    y_true_flat = y_true_expanded.reshape(-1, output_dim)  # [batch_size * n_samples, output_dim]
+    
+    # Compute kernel values between samples and true values
+    kernel_true_flat = kernel_fn(samples_flat, y_true_flat)  # [batch_size * n_samples]
+    kernel_true = kernel_true_flat.reshape(batch_size, n_samples)  # [batch_size, n_samples]
+    
+    # Monte Carlo estimate
+    second_term = 2 * torch.mean(kernel_true, dim=1)  # [batch_size]
+    
+    # Kernel score: E[K(X,X')] - 2*E[K(X,y)]
+    kernel_scores = first_term - second_term  # [batch_size]
+    
+    return kernel_scores
 
 def create_loss_function(config):
     """
@@ -150,7 +259,7 @@ def create_loss_function(config):
     Args:
         config: Dictionary with the following keys:
             - losses: List of loss function strings (must be non-empty)
-                     Valid options: 'crps_loss_general', 'energy_score_loss', 'variogram_score_loss'
+                     Valid options: 'crps_loss_general', 'energy_score_loss', 'variogram_score_loss', 'kernel_score_loss'
             - loss_function_args: Optional dictionary of dictionaries containing arguments for each loss function
                                  Format: {loss_function_name: {arg1: value1, arg2: value2, ...}}
             - coefficients: Optional dictionary of multipliers for each loss function
@@ -179,7 +288,8 @@ def create_loss_function(config):
     available_losses = {
         'crps_loss_general': crps_loss_general,
         'energy_score_loss': energy_score_loss,
-        'variogram_score_loss': variogram_score_loss
+        'variogram_score_loss': variogram_score_loss,
+        'kernel_score_loss': kernel_score_loss
     }
     
     # Validate configuration
@@ -200,19 +310,22 @@ def create_loss_function(config):
         if loss_name not in coefficients:
             coefficients[loss_name] = 1.0
     
-    def combined_loss_function(y_pred_samples, y_true, **kwargs):
+    def combined_loss_function(y_pred_samples, y_true, return_components=False, **kwargs):
         """
         Combined loss function that computes weighted sum of specified losses.
         
         Args:
             y_pred_samples: Predicted samples [batch_size, n_samples, output_dim]
             y_true: True values [batch_size, output_dim]
+            return_components: If True, return individual loss components along with total
             **kwargs: Additional keyword arguments that can be passed to individual loss functions
         
         Returns:
-            Combined loss value [batch_size]
+            If return_components=False: Combined loss value [batch_size]
+            If return_components=True: (total_loss, individual_losses_dict)
         """
         total_loss = None
+        individual_losses = {}
         
         for loss_name in losses:
             loss_fn = available_losses[loss_name]
@@ -235,6 +348,9 @@ def create_loss_function(config):
                 valid_args = {k: v for k, v in merged_args.items() if k in sig.parameters}
                 loss_value = loss_fn(y_pred_samples, y_true, **valid_args)
             
+            # Store individual loss (before weighting)
+            individual_losses[loss_name] = loss_value.mean().item() if hasattr(loss_value, 'mean') else loss_value
+            
             # Apply coefficient
             weighted_loss = coefficient * loss_value
             
@@ -244,7 +360,10 @@ def create_loss_function(config):
             else:
                 total_loss = total_loss + weighted_loss
         
-        return total_loss
+        if return_components:
+            return total_loss, individual_losses
+        else:
+            return total_loss
     
     return combined_loss_function
 
