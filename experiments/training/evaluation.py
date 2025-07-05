@@ -31,9 +31,9 @@ def create_evaluation_config(model_type='MLPSampler', evaluation_type='loss', lo
     if model_type == 'SimpleAffineNormal':
         if loss_type not in ['log_likelihood', 'energy_score', 'crps']:
             raise ValueError(f"Loss type '{loss_type}' not supported for SimpleAffineNormal")
-    elif model_type == 'MLPSampler':
+    elif model_type in ['MLPSampler', 'FGNEncoderSampler']:
         if loss_type not in ['crps', 'energy_score']:
-            raise ValueError(f"Loss type '{loss_type}' not supported for MLPSampler")
+            raise ValueError(f"Loss type '{loss_type}' not supported for {model_type}")
     else:
         raise ValueError(f"Model type '{model_type}' not recognized")
     
@@ -76,7 +76,7 @@ def evaluate_model(model, data_loader, evaluation_config):
         Configuration dictionary containing all evaluation parameters.
         Use create_evaluation_config() for easy configuration creation.
         Required keys:
-        - 'model_type': str ('MLPSampler' or 'SimpleAffineNormal')
+        - 'model_type': str ('MLPSampler', 'FGNEncoderSampler', or 'SimpleAffineNormal')
         - 'evaluation_type': str ('loss' or 'metrics')
         - 'loss_type': str ('crps', 'energy_score', or 'log_likelihood') - for loss evaluation
         
@@ -134,13 +134,13 @@ def _evaluate_loss(model, data_loader, evaluation_config):
                 else:
                     raise ValueError(f"Loss type '{loss_type}' not supported for SimpleAffineNormal")
                     
-            elif model_type == 'MLPSampler':
+            elif model_type in ['MLPSampler', 'FGNEncoderSampler']:
                 if loss_type == 'crps':
                     loss = model.crps_loss(x_batch, y_batch, n_samples=n_samples)
                 elif loss_type == 'energy_score':
                     loss = model.energy_score_loss(x_batch, y_batch, n_samples=n_samples)
                 else:
-                    raise ValueError(f"Loss type '{loss_type}' not supported for MLPSampler")
+                    raise ValueError(f"Loss type '{loss_type}' not supported for {model_type}")
             else:
                 raise ValueError(f"Model type '{model_type}' not recognized")
             
@@ -170,7 +170,7 @@ def _evaluate_metrics(model, data_loader, evaluation_config):
     
     if model_type == 'SimpleAffineNormal':
         return _evaluate_affine_metrics(model, y_test, evaluation_config)
-    elif model_type == 'MLPSampler':
+    elif model_type in ['MLPSampler', 'FGNEncoderSampler']:
         return _evaluate_mlp_metrics(model, x_test, y_test, evaluation_config)
     else:
         raise ValueError(f"Model type '{model_type}' not recognized")

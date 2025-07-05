@@ -17,9 +17,10 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '../../.
 # Import our models
 from models.mlp_crps_sampler import MLPSampler
 from models.affine_normal import SimpleAffineNormal
+from models.fgn_encoder_sampler import FGNEncoderSampler
 
 # Import our data generation function
-from experiments.data.generate import generate_toy_data_multidim
+from experiments.data.generate import generate_toy_data_multidim_extended
 
 # Import our training functions
 from experiments.training.train_functions import (
@@ -78,14 +79,44 @@ def run_experiment(seed, run_id, base_config):
     n_samples = base_config['n_samples']
     batch_size = base_config['batch_size']
     
-    # Generate toy data
-    data_dict = generate_toy_data_multidim(
+    # Extract noise parameters from base_config
+    noise_type = base_config.get('noise_type', 'gaussian')
+    noise_scale = base_config.get('noise_scale', 0.1)
+    target_correlation = base_config.get('target_correlation', 0.8)
+    mean_function = base_config.get('mean_function', 'zero')
+    
+    # Prepare noise-specific parameters
+    noise_kwargs = {}
+    if noise_type == 'student_t':
+        noise_kwargs['df'] = base_config.get('student_t_df', 3)
+    elif noise_type == 'laplace_asymmetric':
+        location = base_config.get('laplace_location', None)
+        scale = base_config.get('laplace_scale', None)
+        if location is not None or scale is not None:
+            noise_kwargs['asymmetry_params'] = {}
+            if location is not None:
+                noise_kwargs['asymmetry_params']['location'] = np.array(location) if isinstance(location, list) else location
+            if scale is not None:
+                noise_kwargs['asymmetry_params']['scale'] = np.array(scale) if isinstance(scale, list) else scale
+    elif noise_type == 'gamma':
+        shape_params = base_config.get('gamma_shape_params', None)
+        if shape_params is not None:
+            noise_kwargs['shape_params'] = np.array(shape_params) if isinstance(shape_params, list) else shape_params
+    elif noise_type == 'lognormal':
+        noise_kwargs['sigma'] = base_config.get('lognormal_sigma', 1.0)
+    
+    print(f"Using noise type: {noise_type} with parameters: {noise_kwargs}")
+    
+    # Generate toy data using the extended function
+    data_dict = generate_toy_data_multidim_extended(
         n_samples=data_size, 
-        x_dim=x_dim if model_type == 'MLPSampler' else 1,  # x_dim doesn't matter for SimpleAffineNormal
+        x_dim=x_dim if model_type in ['MLPSampler', 'FGNEncoderSampler'] else 1,  # x_dim doesn't matter for SimpleAffineNormal
         y_dim=y_dim, 
-        dependent_noise=True, 
-        mean_function='zero', 
-        target_correlation=0.9
+        noise_type=noise_type,
+        noise_scale=noise_scale,
+        mean_function=mean_function,
+        target_correlation=target_correlation,
+        **noise_kwargs
     )
 
     x_train_tensor = data_dict['x_train_tensor']
@@ -108,6 +139,26 @@ def run_experiment(seed, run_id, base_config):
         print(f"Model parameters: A matrix shape {model.A.shape}, b vector shape {model.b.shape}")
         save_path = os.path.join(models_dir, 'affine_normal.pt')
         learning_rate = base_config.get('learning_rate', 0.01)
+    elif model_type == 'FGNEncoderSampler':
+        hidden_size = base_config.get('hidden_size', 3)
+        latent_dim = base_config.get('latent_dim', 3)
+        n_layers = base_config.get('n_layers', 3)
+        dropout_rate = base_config.get('dropout_rate', 0.0)
+        zero_inputs = base_config.get('zero_inputs', True)
+        non_linear = base_config.get('non_linear', False)
+        model = FGNEncoderSampler(
+            input_size=x_dim,
+            hidden_size=hidden_size,
+            latent_dim=latent_dim,
+            n_layers=n_layers,
+            dropout_rate=dropout_rate,
+            output_size=y_dim,
+            zero_inputs=zero_inputs,
+            non_linear=non_linear
+        )
+        print(model)
+        save_path = os.path.join(models_dir, 'fgn_encoder_sampler.pt')
+        learning_rate = base_config.get('learning_rate', 0.001)
     else:  # MLPSampler
         hidden_size = base_config.get('hidden_size', 3)
         latent_dim = base_config.get('latent_dim', 3)
@@ -116,6 +167,8 @@ def run_experiment(seed, run_id, base_config):
         sample_layer_index = base_config.get('sample_layer_index', 1)
         zero_inputs = base_config.get('zero_inputs', True)
         non_linear = base_config.get('non_linear', False)
+        activation_function = base_config.get('activation_function', 'relu')
+        
         model = MLPSampler(
             input_size=x_dim,
             hidden_size=hidden_size,
@@ -125,7 +178,8 @@ def run_experiment(seed, run_id, base_config):
             output_size=y_dim,
             sample_layer_index=sample_layer_index,
             zero_inputs=zero_inputs,
-            non_linear=non_linear
+            non_linear=non_linear,
+            activation_function=activation_function
         )
         print(model)
         save_path = os.path.join(models_dir, 'mlp_sampler.pt')
@@ -217,7 +271,7 @@ def run_experiment(seed, run_id, base_config):
         print(f"Learned mean: {mean.detach().cpu().numpy()}")
         print(f"Learned covariance:\n{cov.detach().cpu().numpy()}")
         
-    else:  # MLPSampler
+    else:  # MLPSampler or FGNEncoderSampler
         # Calculate additional metrics
         metrics = evaluate_metrics(model, x_test_tensor, y_test_tensor, n_samples=n_samples, device=device)
         
@@ -275,20 +329,34 @@ def main():
     base_config = {
         # Data parameters
         'x_dim': 1,
-        'y_dim': 3,
+        'y_dim': 10,
         'data_size': 2000,
         
+        # Noise parameters - NEW SECTION
+        'noise_type': 'laplace_symmetric',  # Options: 'gaussian', 'student_t', 'laplace_symmetric', 'laplace_asymmetric', 'gamma', 'lognormal'
+        'noise_scale': 0.3,
+        'target_correlation': 0.6,
+        'mean_function': 'zero',
+        
+        # Noise-specific parameters (only used if corresponding noise_type is selected)
+        'student_t_df': 3,  # Degrees of freedom for Student-t
+        'laplace_location': [0.0, 0.0],  # Location parameters for asymmetric Laplace (list for multivariate)
+        'laplace_scale': [1.0, 1.0],     # Scale parameters for asymmetric Laplace (list for multivariate)
+        'gamma_shape_params': [2.0, 1.5],  # Shape parameters for gamma distribution (list for multivariate)
+        'lognormal_sigma': 0.5,  # Standard deviation in log space for lognormal
+        
         # Model selection - Change this to switch between models
-        'model_type': 'MLPSampler',  # Options: 'MLPSampler' or 'SimpleAffineNormal'
+        'model_type': 'FGNEncoderSampler',  # Options: 'MLPSampler', 'FGNEncoderSampler', or 'SimpleAffineNormal'
         
         # Model parameters for MLPSampler (ignored if using SimpleAffineNormal)
-        'hidden_size': 64,
-        'latent_dim': 1,
-        'n_layers': 3,
+        'hidden_size': [16,32,64,128],
+        'latent_dim': 2,
+        'n_layers': 4,
+        'sample_layer_index': 1, # Not used for FGNEncoderSampler
         'dropout_rate': 0.0,
-        'sample_layer_index': 1,
         'zero_inputs': True,
-        'non_linear': False,
+        'non_linear': True,
+        'activation_function': 'relu',  # Options: 'relu', 'sigmoid', 'tanh', 'leaky_relu', 'gelu', 'elu', 'softplus'
         
         # Training parameters
         'n_epochs': 100,
@@ -301,11 +369,6 @@ def main():
         # Weight tracking parameters
         'track_weights': True,  # Enable weight evolution tracking
         'track_samples_every': 5,  # Create prediction plots every N epochs
-        
-        # Data generation parameters
-        'dependent_noise': True,
-        'mean_function': 'zero',
-        'target_correlation': 0.9,
         
         # Loss function
         'loss_function': 'energy_score'

@@ -252,6 +252,115 @@ def kernel_score_loss(y_pred_samples, y_true, kernel_type='gaussian', **kwargs):
     
     return kernel_scores
 
+def mmd_loss(y_pred_samples, y_true, kernel_type='gaussian', **kwargs):
+    """
+    Compute Maximum Mean Discrepancy (MMD) loss for multivariate samples.
+    
+    The MMD between predicted distribution P and true delta distribution δ_y is:
+    MMD²(P, δ_y) = E_{X,X'~P}[k(X,X')] - 2*E_{X~P}[k(X,y)] + k(y,y)
+    
+    Since k(y,y) = 1 for normalised kernels, this simplifies to:
+    MMD²(P, δ_y) = E_{X,X'~P}[k(X,X')] - 2*E_{X~P}[k(X,y)] + 1
+    
+    Uses biased Monte Carlo estimate for E[k(X,X')].
+
+    Args:
+        y_pred_samples: Predicted samples [batch_size, n_samples, output_dim]
+        y_true: True values [batch_size, output_dim]
+        kernel_type: Type of kernel to use ('gaussian', 'laplacian', 'polynomial', or 'rq')
+        **kwargs: Additional keyword arguments for the kernel function:
+            - sigma: Kernel bandwidth parameter (default: 1.0)
+            - gamma: Inverse bandwidth for Laplacian kernel (default: 1.0)
+            - degree: Degree for polynomial kernel (default: 2)
+            - alpha: Scale parameter for rational quadratic kernel (default: 1.0)
+
+    Returns:
+        MMD loss (lower is better) [batch_size]
+    """
+    batch_size, n_samples, output_dim = y_pred_samples.shape
+    device = y_pred_samples.device
+    
+    # Extract kernel parameters
+    sigma = kwargs.get('sigma', 1.0)
+    gamma = kwargs.get('gamma', 1.0)
+    degree = kwargs.get('degree', 2)
+    alpha = kwargs.get('alpha', 1.0)
+    
+    def gaussian_kernel(x1, x2, sigma=1.0):
+        """Gaussian (RBF) kernel: K(x1, x2) = exp(-||x1 - x2||^2 / (2 * sigma^2))"""
+        squared_dist = torch.sum((x1 - x2) ** 2, dim=-1)
+        return torch.exp(-squared_dist / (2 * sigma ** 2))
+    
+    def laplacian_kernel(x1, x2, gamma=1.0):
+        """Laplacian kernel: K(x1, x2) = exp(-gamma * ||x1 - x2||)"""
+        dist = torch.norm(x1 - x2, dim=-1)
+        return torch.exp(-gamma * dist)
+    
+    def polynomial_kernel(x1, x2, degree=2):
+        """Polynomial kernel: K(x1, x2) = (1 + <x1, x2>)^degree"""
+        dot_product = torch.sum(x1 * x2, dim=-1)
+        return torch.pow(1 + dot_product, degree)
+    
+    def rational_quadratic_kernel(x1, x2, alpha=1.0, sigma=1.0):
+        """Rational quadratic kernel: K(x1, x2) = (1 + ||x1 - x2||^2 / (2*alpha*sigma^2))^(-alpha)"""
+        squared_dist = torch.sum((x1 - x2) ** 2, dim=-1)
+        return torch.pow(1 + squared_dist / (2 * alpha * sigma ** 2), -alpha)
+    
+    # Select kernel function
+    if kernel_type == 'gaussian':
+        kernel_fn = lambda x1, x2: gaussian_kernel(x1, x2, sigma=sigma)
+    elif kernel_type == 'laplacian':
+        kernel_fn = lambda x1, x2: laplacian_kernel(x1, x2, gamma=gamma)
+    elif kernel_type == 'polynomial':
+        kernel_fn = lambda x1, x2: polynomial_kernel(x1, x2, degree=degree)
+    elif kernel_type == 'rq' or kernel_type == 'rational_quadratic':
+        kernel_fn = lambda x1, x2: rational_quadratic_kernel(x1, x2, alpha=alpha, sigma=sigma)
+    else:
+        raise ValueError(f"Unknown kernel type: {kernel_type}. Available options: 'gaussian', 'laplacian', 'polynomial', 'rq'")
+    
+    # First term: E_{X,X'~P}[k(X,X')] using biased Monte Carlo estimate
+    # Compute all pairwise kernel values between samples (including diagonal)
+    samples_expanded_i = y_pred_samples.unsqueeze(2)  # [batch_size, n_samples, 1, output_dim]
+    samples_expanded_j = y_pred_samples.unsqueeze(1)  # [batch_size, 1, n_samples, output_dim]
+    
+    # Reshape for kernel computation
+    samples_i_flat = samples_expanded_i.expand(-1, -1, n_samples, -1).reshape(-1, output_dim)
+    samples_j_flat = samples_expanded_j.expand(-1, n_samples, -1, -1).reshape(-1, output_dim)
+    
+    # Compute kernel values
+    kernel_values_flat = kernel_fn(samples_i_flat, samples_j_flat)  # [batch_size * n_samples * n_samples]
+    kernel_values = kernel_values_flat.reshape(batch_size, n_samples, n_samples)
+    
+    # Biased Monte Carlo estimate: include all pairs (including diagonal)
+    first_term = torch.mean(kernel_values, dim=(1, 2))  # [batch_size]
+    
+    # Second term: 2 * E_{X~P}[k(X,y)]
+    # Expand y_true to match samples shape
+    y_true_expanded = y_true.unsqueeze(1).expand(-1, n_samples, -1)  # [batch_size, n_samples, output_dim]
+    
+    # Reshape for kernel computation
+    samples_flat = y_pred_samples.reshape(-1, output_dim)  # [batch_size * n_samples, output_dim]
+    y_true_flat = y_true_expanded.reshape(-1, output_dim)  # [batch_size * n_samples, output_dim]
+    
+    # Compute kernel values between samples and true values
+    kernel_true_flat = kernel_fn(samples_flat, y_true_flat)  # [batch_size * n_samples]
+    kernel_true = kernel_true_flat.reshape(batch_size, n_samples)  # [batch_size, n_samples]
+    
+    # Monte Carlo estimate
+    second_term = 2 * torch.mean(kernel_true, dim=1)  # [batch_size]
+    
+    # Third term: k(y,y) = 1 for normalised kernels
+    third_term = 1.0
+    
+    # MMD²: E[k(X,X')] - 2*E[k(X,y)] + k(y,y)
+    mmd_squared = first_term - second_term + third_term  # [batch_size]
+    
+    # Return MMD (take square root, but ensure non-negative first)
+    mmd_squared = torch.clamp(mmd_squared, min=0.0)  # Ensure non-negative due to numerical errors
+    mmd_loss_values = torch.sqrt(mmd_squared)  # [batch_size]
+    
+    return mmd_loss_values
+
 def create_loss_function(config):
     """
     Create a combined loss function from a configuration dictionary.
@@ -259,7 +368,7 @@ def create_loss_function(config):
     Args:
         config: Dictionary with the following keys:
             - losses: List of loss function strings (must be non-empty)
-                     Valid options: 'crps_loss_general', 'energy_score_loss', 'variogram_score_loss', 'kernel_score_loss'
+                     Valid options: 'crps_loss_general', 'energy_score_loss', 'variogram_score_loss', 'kernel_score_loss', 'mmd_loss'
             - loss_function_args: Optional dictionary of dictionaries containing arguments for each loss function
                                  Format: {loss_function_name: {arg1: value1, arg2: value2, ...}}
             - coefficients: Optional dictionary of multipliers for each loss function
@@ -289,7 +398,8 @@ def create_loss_function(config):
         'crps_loss_general': crps_loss_general,
         'energy_score_loss': energy_score_loss,
         'variogram_score_loss': variogram_score_loss,
-        'kernel_score_loss': kernel_score_loss
+        'kernel_score_loss': kernel_score_loss,
+        'mmd_loss': mmd_loss
     }
     
     # Validate configuration

@@ -30,10 +30,10 @@ def create_training_config(model_type='MLPSampler', loss_type='crps', **kwargs):
         default_lr = 0.001
         if loss_type not in ['log_likelihood', 'energy_score', 'crps']:
             raise ValueError(f"Loss type '{loss_type}' not supported for SimpleAffineNormal")
-    elif model_type == 'MLPSampler':
+    elif model_type in ['MLPSampler', 'FGNEncoderSampler']:
         default_lr = 0.001
         if loss_type not in ['crps', 'energy_score']:
-            raise ValueError(f"Loss type '{loss_type}' not supported for MLPSampler")
+            raise ValueError(f"Loss type '{loss_type}' not supported for {model_type}")
     else:
         raise ValueError(f"Model type '{model_type}' not recognized")
     
@@ -87,7 +87,7 @@ def train_model(model, train_loader, val_loader, training_config):
         Configuration dictionary containing all training parameters.
         Use create_training_config() for easy configuration creation.
         Required keys:
-        - 'model_type': str ('MLPSampler' or 'SimpleAffineNormal')
+        - 'model_type': str ('MLPSampler', 'FGNEncoderSampler', or 'SimpleAffineNormal')
         - 'loss_type': str ('crps', 'energy_score', or 'log_likelihood')
         
         Optional keys with defaults:
@@ -156,8 +156,9 @@ def train_model(model, train_loader, val_loader, training_config):
     weight_tracker = None
     intermediate_plots_dir = None
     weight_plots_dir = None
+    model_checkpoints_dir = None
     if track_weights or (y_test is not None):
-        from experiments.visualisation.weight_tracking import WeightTracker, create_intermediate_sample_plots
+        from experiments.visualisation.weight_tracking import WeightTracker, create_intermediate_sample_plots, create_training_progression_plot
         weight_tracker = WeightTracker(model, track_weights=track_weights, 
                                      track_samples_every=track_samples_every)
         
@@ -166,8 +167,10 @@ def train_model(model, train_loader, val_loader, training_config):
             base_dir = os.path.dirname(save_path)
             intermediate_plots_dir = os.path.join(base_dir, 'intermediate_plots')
             weight_plots_dir = os.path.join(base_dir, 'weight_evolution')
+            model_checkpoints_dir = os.path.join(base_dir, 'model_checkpoints')
             os.makedirs(intermediate_plots_dir, exist_ok=True)
             os.makedirs(weight_plots_dir, exist_ok=True)
+            os.makedirs(model_checkpoints_dir, exist_ok=True)
     
     # Training loop
     for epoch in range(n_epochs):
@@ -206,7 +209,7 @@ def train_model(model, train_loader, val_loader, training_config):
         history['epochs'].append(epoch + 1)
         
         # Print progress
-        if verbose and ((epoch + 1) % 10 == 0 or model_type == 'MLPSampler'):
+        if verbose and ((epoch + 1) % 10 == 0 or model_type in ['MLPSampler', 'FGNEncoderSampler']):
             print(f"Epoch {epoch+1}/{n_epochs} - Train Loss: {avg_train_loss:.4f} - Val Loss: {val_loss:.4f}")
         
         # Track weights and create intermediate plots
@@ -220,16 +223,27 @@ def train_model(model, train_loader, val_loader, training_config):
                 intermediate_plots_dir is not None):
                 try:
                     # For SimpleAffineNormal, x_test should be None
-                    x_for_plot = x_test if model_type == 'MLPSampler' else None
+                    x_for_plot = x_test if model_type in ['MLPSampler', 'FGNEncoderSampler'] else None
                     plot_path = create_intermediate_sample_plots(
                         model, x_for_plot, y_test, noise_args, epoch + 1,
                         intermediate_plots_dir, n_samples=1000, device=device
                     )
                     weight_tracker.record_sample_epoch(epoch + 1)
-                    if verbose and ((epoch + 1) % 10 == 0 or model_type == 'MLPSampler'):
+                    
+                    # Save model checkpoint at this epoch
+                    if model_checkpoints_dir is not None:
+                        checkpoint_path = os.path.join(model_checkpoints_dir, f'model_epoch_{epoch+1:03d}.pt')
+                        torch.save({
+                            'epoch': epoch + 1,
+                            'model_state_dict': model.state_dict(),
+                            'model_type': model_type,
+                            'val_loss': val_loss
+                        }, checkpoint_path)
+                    
+                    if verbose and ((epoch + 1) % 10 == 0 or model_type in ['MLPSampler', 'FGNEncoderSampler']):
                         print(f"  Saved intermediate samples: {os.path.basename(plot_path)}")
                 except Exception as e:
-                    if verbose and ((epoch + 1) % 10 == 0 or model_type == 'MLPSampler'):
+                    if verbose and ((epoch + 1) % 10 == 0 or model_type in ['MLPSampler', 'FGNEncoderSampler']):
                         print(f"  Warning: Failed to create intermediate plot: {e}")
         
         # Check for improvement
@@ -277,6 +291,38 @@ def train_model(model, train_loader, val_loader, training_config):
             if verbose:
                 print(f"Warning: Failed to create weight evolution plots: {e}")
     
+    # Create training progression landscape plot if we have sample epochs
+    progression_plot_path = None
+    if (weight_tracker is not None and 
+        y_test is not None and 
+        len(weight_tracker.sample_epochs) > 0 and 
+        model_checkpoints_dir is not None):
+        try:
+            progression_plot_path = create_training_progression_plot(
+                model=model,
+                x_test=x_test,
+                y_test=y_test,
+                noise_args=noise_args,
+                base_save_dir=os.path.dirname(save_path) if save_path else None,
+                sample_epochs=weight_tracker.sample_epochs,
+                model_checkpoints_dir=model_checkpoints_dir,
+                model_type=model_type,
+                n_samples=1000,
+                test_point_idx=0,
+                device=device
+            )
+            if progression_plot_path and verbose:
+                print(f"Created training progression landscape plot: {os.path.basename(progression_plot_path)}")
+        except Exception as e:
+            if verbose:
+                print(f"Warning: Failed to create training progression plot: {e}")
+    
+    # Update weight evolution info with progression plot
+    if weight_evolution_info:
+        weight_evolution_info['progression_plot_path'] = progression_plot_path
+    else:
+        weight_evolution_info = {'progression_plot_path': progression_plot_path}
+    
     return {
         'model': model,
         'history': history,
@@ -303,13 +349,13 @@ def _get_loss_function(model, model_type, loss_type, n_samples):
         else:
             raise ValueError(f"Loss type '{loss_type}' not supported for SimpleAffineNormal")
     
-    elif model_type == 'MLPSampler':
+    elif model_type in ['MLPSampler', 'FGNEncoderSampler']:
         if loss_type == 'crps':
             return lambda x, y: model.crps_loss(x, y, n_samples=n_samples)
         elif loss_type == 'energy_score':
             return lambda x, y: model.energy_score_loss(x, y, n_samples=n_samples)
         else:
-            raise ValueError(f"Loss type '{loss_type}' not supported for MLPSampler")
+            raise ValueError(f"Loss type '{loss_type}' not supported for {model_type}")
     
     else:
         raise ValueError(f"Model type '{model_type}' not recognized")

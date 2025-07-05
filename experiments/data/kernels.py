@@ -1,106 +1,169 @@
 import numpy as np
+from scipy.spatial.distance import cdist
 from scipy.special import gamma, kv
 
-def rbf_kernel(X1, X2, lengthscale, amplitude):
+def rbf_kernel(x1, x2, lengthscale, amplitude):
     """
-    RBF/Squared Exponential kernel
+    Radial Basis Function (RBF) kernel, also known as squared exponential kernel.
     
     Parameters:
     -----------
-    X1 : array-like, shape (n1, d)
-        First set of input points
-    X2 : array-like, shape (n2, d)
-        Second set of input points
+    x1, x2 : array-like
+        Input points (n_samples, n_features)
     lengthscale : float
-        Length scale parameter that controls smoothness
+        Length scale parameter
     amplitude : float
-        Amplitude parameter that controls output variance
-        
+        Amplitude parameter
+    
     Returns:
     --------
-    array-like, shape (n1, n2)
-        Kernel matrix between X1 and X2
+    K : array
+        Kernel matrix
     """
-    # Compute pairwise squared distances
-    dists = np.sum((X1[:, None, :] - X2[None, :, :]) ** 2, axis=2)
-    return amplitude**2 * np.exp(-0.5 * dists / lengthscale**2)
+    if x1.ndim == 1:
+        x1 = x1.reshape(-1, 1)
+    if x2.ndim == 1:
+        x2 = x2.reshape(-1, 1)
+    
+    # Compute squared distances
+    sq_distances = cdist(x1, x2, metric='sqeuclidean')
+    
+    # Apply RBF kernel
+    K = amplitude * np.exp(-0.5 * sq_distances / lengthscale**2)
+    
+    return K
 
-def matern_kernel(X1, X2, lengthscale, amplitude, nu):
+def matern_kernel(x1, x2, lengthscale, amplitude, nu):
     """
-    Matérn kernel with various smoothness parameters
+    Matérn kernel.
     
     Parameters:
     -----------
-    X1 : array-like, shape (n1, d)
-        First set of input points
-    X2 : array-like, shape (n2, d)
-        Second set of input points
+    x1, x2 : array-like
+        Input points (n_samples, n_features)
     lengthscale : float
-        Length scale parameter that controls smoothness
+        Length scale parameter
     amplitude : float
-        Amplitude parameter that controls output variance
+        Amplitude parameter
     nu : float
-        Smoothness parameter (common values: 0.5, 1.5, 2.5)
-        
+        Smoothness parameter
+    
     Returns:
     --------
-    array-like, shape (n1, n2)
-        Kernel matrix between X1 and X2
+    K : array
+        Kernel matrix
     """
-    dists = np.sqrt(np.sum((X1[:, None, :] - X2[None, :, :]) ** 2, axis=2))
+    if x1.ndim == 1:
+        x1 = x1.reshape(-1, 1)
+    if x2.ndim == 1:
+        x2 = x2.reshape(-1, 1)
     
+    # Compute distances
+    distances = cdist(x1, x2, metric='euclidean')
+    
+    # Special cases for common nu values
     if nu == 0.5:
-        # Exponential kernel (special case of Matérn)
-        return amplitude**2 * np.exp(-dists / lengthscale)
+        # Exponential kernel
+        K = amplitude * np.exp(-distances / lengthscale)
     elif nu == 1.5:
-        scaled_dists = np.sqrt(3) * dists / lengthscale
-        return amplitude**2 * (1 + scaled_dists) * np.exp(-scaled_dists)
+        # Matern 3/2
+        sqrt3_r = np.sqrt(3) * distances / lengthscale
+        K = amplitude * (1 + sqrt3_r) * np.exp(-sqrt3_r)
     elif nu == 2.5:
-        scaled_dists = np.sqrt(5) * dists / lengthscale
-        return amplitude**2 * (1 + scaled_dists + scaled_dists**2/3) * np.exp(-scaled_dists)
+        # Matern 5/2
+        sqrt5_r = np.sqrt(5) * distances / lengthscale
+        K = amplitude * (1 + sqrt5_r + 5 * distances**2 / (3 * lengthscale**2)) * np.exp(-sqrt5_r)
     else:
-        # General Matérn kernel
-        scaled_dists = np.sqrt(2 * nu) * dists / lengthscale
-        scaled_dists = np.where(scaled_dists == 0, 1e-10, scaled_dists)  # Avoid division by zero
-        K = amplitude**2 * (2**(1-nu) / gamma(nu)) * (scaled_dists**nu) * kv(nu, scaled_dists)
-        K = np.where(dists == 0, amplitude**2, K)  # Handle diagonal elements
-        return K
+        # General Matern kernel
+        sqrt2nu_r = np.sqrt(2 * nu) * distances / lengthscale
+        
+        # Handle the case where distance is 0
+        K = np.zeros_like(distances)
+        nonzero_mask = distances > 0
+        
+        if np.any(nonzero_mask):
+            K[nonzero_mask] = (amplitude * (2**(1-nu)) / gamma(nu) * 
+                              (sqrt2nu_r[nonzero_mask]**nu) * 
+                              kv(nu, sqrt2nu_r[nonzero_mask]))
+        
+        # Set diagonal elements (where distance is 0)
+        diag_mask = distances == 0
+        K[diag_mask] = amplitude
+    
+    return K
 
-def linear_kernel(X1, X2, variance, offset):
+def linear_kernel(x1, x2, variance, offset):
     """
-    Linear kernel (dot product with optional bias)
+    Linear kernel.
     
     Parameters:
     -----------
-    X1 : array-like, shape (n1, d)
-        First set of input points
-    X2 : array-like, shape (n2, d)
-        Second set of input points
+    x1, x2 : array-like
+        Input points (n_samples, n_features)
     variance : float
-        Variance parameter scaling the dot product
+        Variance parameter
     offset : float
-        Bias term added to the dot product
-        
+        Offset parameter
+    
     Returns:
     --------
-    array-like, shape (n1, n2)
-        Kernel matrix between X1 and X2
+    K : array
+        Kernel matrix
     """
-    return variance * (np.dot(X1, X2.T) + offset)
+    if x1.ndim == 1:
+        x1 = x1.reshape(-1, 1)
+    if x2.ndim == 1:
+        x2 = x2.reshape(-1, 1)
+    
+    # Linear kernel: variance * (x1 @ x2.T) + offset
+    K = variance * np.dot(x1, x2.T) + offset
+    
+    return K
 
-def get_kernel_function(kernel_type):
+def default_kernel_params(kernel_type):
     """
-    Return the appropriate kernel function based on kernel_type
+    Generate default kernel parameters for different kernel types.
     
     Parameters:
     -----------
     kernel_type : str
         Type of kernel ('rbf', 'matern', 'linear')
-        
+    
     Returns:
     --------
-    function
-        The corresponding kernel function
+    dict : Dictionary of kernel parameters
+    """
+    if kernel_type == 'rbf':
+        return {
+            'lengthscale': np.random.uniform(0.5, 2.0),
+            'amplitude': np.random.uniform(0.5, 1.5)
+        }
+    elif kernel_type == 'matern':
+        return {
+            'lengthscale': np.random.uniform(0.5, 2.0),
+            'amplitude': np.random.uniform(0.5, 1.5),
+            'nu': np.random.choice([0.5, 1.5, 2.5])  # Common values
+        }
+    elif kernel_type == 'linear':
+        return {
+            'variance': np.random.uniform(0.1, 1.0),
+            'offset': np.random.uniform(0.0, 0.5)
+        }
+    else:
+        raise ValueError(f"Unknown kernel type: {kernel_type}")
+
+def get_kernel_function(kernel_type):
+    """
+    Get the kernel function for a given kernel type.
+    
+    Parameters:
+    -----------
+    kernel_type : str
+        Type of kernel ('rbf', 'matern', 'linear')
+    
+    Returns:
+    --------
+    function : Kernel function
     """
     if kernel_type == 'rbf':
         return rbf_kernel
@@ -109,112 +172,70 @@ def get_kernel_function(kernel_type):
     elif kernel_type == 'linear':
         return linear_kernel
     else:
-        raise ValueError(f"Kernel type {kernel_type} not implemented")
+        raise ValueError(f"Unknown kernel type: {kernel_type}")
 
-def default_kernel_params(kernel_type, random=True):
+def evaluate_gp_mean(x_new, gp_function):
     """
-    Return default parameters for the specified kernel type
+    Evaluate GP mean function at new points using kernel regression.
     
     Parameters:
     -----------
-    kernel_type : str
-        Type of kernel ('rbf', 'matern', 'linear')
-    random : bool
-        If True, return random parameters; if False, return fixed defaults
-        
-    Returns:
-    --------
-    dict
-        Dictionary of kernel parameters
-    """
-    if kernel_type == 'rbf':
-        if random:
-            return {
-                'lengthscale': np.random.uniform(0.5, 2.0),
-                'amplitude': np.random.uniform(0.5, 1.5)
-            }
-        else:
-            return {'lengthscale': 1.0, 'amplitude': 1.0}
-            
-    elif kernel_type == 'matern':
-        if random:
-            return {
-                'lengthscale': np.random.uniform(0.5, 2.0),
-                'amplitude': np.random.uniform(0.5, 1.5),
-                'nu': np.random.choice([0.5, 1.5, 2.5])  # Common values for Matérn
-            }
-        else:
-            return {'lengthscale': 1.0, 'amplitude': 1.0, 'nu': 1.5}
-            
-    elif kernel_type == 'linear':
-        if random:
-            return {
-                'variance': np.random.uniform(0.5, 1.5),
-                'offset': np.random.uniform(-0.5, 0.5)
-            }
-        else:
-            return {'variance': 1.0, 'offset': 0.0}
-            
-    else:
-        raise ValueError(f"Default parameters not implemented for kernel type: {kernel_type}")
-
-def evaluate_gp_mean(x_new, gp_func):
-    """
-    Evaluate GP mean function at new points using stored GP function information
+    x_new : array-like
+        New input points
+    gp_function : dict
+        GP function information with keys: 'x_train', 'f_train', 'kernel_type', 'kernel_params'
     
-    Parameters:
-    -----------
-    x_new : array-like, shape (n_new, d)
-        New input points where to evaluate the GP
-    gp_func : dict
-        Dictionary containing GP function information:
-        - x_train: Training inputs
-        - f_train: GP function values at training inputs
-        - kernel_type: Type of kernel
-        - kernel_params: Kernel parameters
-        
     Returns:
     --------
-    array-like, shape (n_new,)
+    mean_new : array
         Mean function values at new points
     """
-    # Extract GP function parameters
-    x_train = gp_func['x_train']
-    f_train = gp_func['f_train']
-    kernel_type = gp_func['kernel_type']
-    kernel_params = gp_func['kernel_params']
+    x_train = gp_function['x_train']
+    f_train = gp_function['f_train']
+    kernel_type = gp_function['kernel_type']
+    kernel_params = gp_function['kernel_params']
     
     # Get kernel function
     kernel_function = get_kernel_function(kernel_type)
     
-    # Compute cross-covariance between new points and training points
+    # Compute kernel matrices
     if kernel_type == 'rbf':
+        K_train = kernel_function(x_train, x_train, 
+                                 kernel_params['lengthscale'], 
+                                 kernel_params['amplitude'])
         K_cross = kernel_function(x_new, x_train, 
-                              kernel_params['lengthscale'], 
-                              kernel_params['amplitude'])
-        # Compute training covariance matrix
-        K_train = kernel_function(x_train, x_train,
-                              kernel_params['lengthscale'], 
-                              kernel_params['amplitude'])
+                                 kernel_params['lengthscale'], 
+                                 kernel_params['amplitude'])
     elif kernel_type == 'matern':
-        K_cross = kernel_function(x_new, x_train,
-                              kernel_params['lengthscale'],
-                              kernel_params['amplitude'],
-                              kernel_params['nu'])
-        K_train = kernel_function(x_train, x_train,
-                              kernel_params['lengthscale'],
-                              kernel_params['amplitude'],
-                              kernel_params['nu'])
+        K_train = kernel_function(x_train, x_train, 
+                                 kernel_params['lengthscale'], 
+                                 kernel_params['amplitude'], 
+                                 kernel_params['nu'])
+        K_cross = kernel_function(x_new, x_train, 
+                                 kernel_params['lengthscale'], 
+                                 kernel_params['amplitude'], 
+                                 kernel_params['nu'])
     elif kernel_type == 'linear':
-        K_cross = kernel_function(x_new, x_train,
-                              kernel_params['variance'],
-                              kernel_params['offset'])
-        K_train = kernel_function(x_train, x_train,
-                              kernel_params['variance'],
-                              kernel_params['offset'])
+        K_train = kernel_function(x_train, x_train, 
+                                 kernel_params['variance'], 
+                                 kernel_params['offset'])
+        K_cross = kernel_function(x_new, x_train, 
+                                 kernel_params['variance'], 
+                                 kernel_params['offset'])
     
-    # Add jitter to training covariance for numerical stability
-    K_train += 1e-6 * np.eye(len(x_train))
+    # Add noise for numerical stability
+    K_train += 1e-6 * np.eye(K_train.shape[0])
     
-    # GP predictive mean: K_cross @ K_train^{-1} @ f_train
-    return K_cross @ np.linalg.solve(K_train, f_train) 
+    # Compute mean predictions
+    try:
+        # Use Cholesky decomposition for numerical stability
+        L = np.linalg.cholesky(K_train)
+        alpha = np.linalg.solve(L, f_train)
+        alpha = np.linalg.solve(L.T, alpha)
+        mean_new = np.dot(K_cross, alpha)
+    except np.linalg.LinAlgError:
+        # Fall back to standard solve if Cholesky fails
+        alpha = np.linalg.solve(K_train, f_train)
+        mean_new = np.dot(K_cross, alpha)
+    
+    return mean_new 
