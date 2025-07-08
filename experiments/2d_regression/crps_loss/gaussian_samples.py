@@ -196,11 +196,15 @@ def run_experiment(seed, run_id, base_config):
         n_epochs=n_epochs,
         patience=patience,
         learning_rate=learning_rate,
-        n_samples=train_n_samples,
+        train_n_samples=train_n_samples,
+        n_samples=n_samples,
         device=device,
         save_path=save_path,
         track_weights=base_config.get('track_weights', False),
         track_samples_every=base_config.get('track_samples_every', 5),
+        track_moments=base_config.get('track_moments', False),
+        moments_to_track=base_config.get('moments_to_track', [1, 2, 3, 4]),
+        noise_samples=data_dict.get('noise_samples', None),
         x_test=x_test_tensor,
         y_test=y_test_tensor,
         noise_args=noise_args
@@ -342,25 +346,25 @@ def main():
         'data_size': 2000,
         
         # Noise parameters - NEW SECTION
-        'noise_type': 'student_t',  # Options: 'gaussian', 'student_t', 'laplace_symmetric', 'laplace_asymmetric', 'gamma', 'lognormal'
+        'noise_type': 'laplace_asymmetric',  # Options: 'gaussian', 'student_t', 'laplace_symmetric', 'laplace_asymmetric', 'gamma', 'lognormal'
         'noise_scale': 0.3,
-        'target_correlation': 0.8,
+        'target_correlation': 0.6,
         'mean_function': 'zero',
         
         # Noise-specific parameters (only used if corresponding noise_type is selected)
         'student_t_df': 3,  # Degrees of freedom for Student-t
-        'laplace_location': [0.0, 0.0],  # Location parameters for asymmetric Laplace (list for multivariate)
-        'laplace_scale': [1.0, 1.0],     # Scale parameters for asymmetric Laplace (list for multivariate)
-        'gamma_shape_params': [2.0, 1.5],  # Shape parameters for gamma distribution (list for multivariate)
+        'laplace_location': [0.0] * 10,  # Location parameters for asymmetric Laplace (must match y_dim)
+        'laplace_scale': [1.0] * 10,     # Scale parameters for asymmetric Laplace (must match y_dim)
+        'gamma_shape_params': [2.0] * 10,  # Shape parameters for gamma distribution (must match y_dim)
         'lognormal_sigma': 0.5,  # Standard deviation in log space for lognormal
         
         # Model selection - Change this to switch between models
         'model_type': 'FGNEncoderSampler',  # Options: 'MLPSampler', 'FGNEncoderSampler', or 'SimpleAffineNormal'
         
-        # Model parameters for MLPSampler (ignored if using SimpleAffineNormal)
-        'hidden_size': [16,32,64,128],
+        # Model parameters for MLPSampler and FGNEncoderSampler (ignored if using SimpleAffineNormal)
+        'hidden_size': [16,32,64],
         'latent_dim': 2,
-        'n_layers': 4,
+        'n_layers': 3,
         'dropout_rate': 0.0,
         'sample_layer_index': 1, # Not used for FGNEncoderSampler
         'zero_inputs': True,
@@ -369,15 +373,17 @@ def main():
         
         # Training parameters
         'n_epochs': 100,
-        'patience': 5,
+        'patience': 10,
         'train_n_samples': 10,
-        'n_samples': 1000,
+        'n_samples': 2000,
         'batch_size': 16,
-        'learning_rate': 0.0001,  # Only used for SimpleAffineNormal
+        'learning_rate': 0.00005,  # Only used for SimpleAffineNormal
         
         # Weight tracking parameters
         'track_weights': True,  # Enable weight evolution tracking
         'track_samples_every': 5,  # Create prediction plots every N epochs
+        'track_moments': True,  # NEW: Enable moments tracking during training
+        'moments_to_track': [1, 2, 3, 4],  # NEW: Which moments to track (mean, variance, skewness, kurtosis)
 
         # Loss function
         'loss_function': 'crps',

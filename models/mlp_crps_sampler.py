@@ -136,12 +136,19 @@ class MLPSampler(nn.Module):
         Forward pass through the network. If zero_inputs is True we directly feed self.input_vector to the feature extractor.
         
         Args:
-            x: Input tensor of shape [batch_size, input_size]
+            x: Input tensor of shape [batch_size, input_size] (single timestep only)
             n_samples: Number of samples to generate (optional)
             
         Returns:
-            samples: Predicted samples of shape [batch_size, n_samples]
+            samples: Predicted samples of shape [batch_size, n_samples, output_size]
         """
+        # Validate input shape - only single timestep supported
+        if not self.zero_inputs and len(x.shape) != 2:
+            raise ValueError(f"MLPSampler only supports single timestep inputs. "
+                           f"Expected shape [batch_size, input_size], got {x.shape}. "
+                           f"If you have time series data [batch_size, timesteps, dims], "
+                           f"this model is not suitable for multi-timestep inputs.")
+        
         # Extract features
         with crps.EpsilonSampler.n_samples(n_samples): # Override the default number of n_samples.
             if self.zero_inputs:

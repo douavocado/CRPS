@@ -35,15 +35,19 @@ class SimpleAffineNormal(nn.Module):
         """
         Generate samples from y = Ax + b where x ~ N(0,I).
         
+        Note: This model does not use input data and generates unconditional samples.
+        It only supports single timestep outputs.
+        
         Args:
             n_samples: Number of samples to generate per batch item
             batch_size: Number of batch items
             
         Returns:
-            Samples tensor [batch_size, n_samples, output_dim] if batch_size > 1
-            Samples tensor [n_samples, output_dim] if batch_size = 1 (for backwards compatibility)
+            Samples tensor [batch_size, n_samples, output_dim] (single timestep only)
         """
-
+        # Note: This model generates unconditional samples and doesn't use input data
+        # It only supports single timestep outputs (not time series)
+        
         # Generate samples for batch: [batch_size, n_samples, output_dim]
         x = torch.randn(batch_size, n_samples, self.output_dim, device=self.A.device)
         

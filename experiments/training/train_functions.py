@@ -55,6 +55,9 @@ def create_training_config(model_type='MLPSampler', loss_type='crps', **kwargs):
         'save_path': None,
         'track_weights': False,
         'track_samples_every': 5,
+        'track_moments': False,  # NEW: Enable moments tracking
+        'moments_to_track': [1, 2, 3, 4],  # NEW: Which moments to track
+        'noise_samples': None,  # NEW: Noise samples for true moments calculation
         
         # Test data for intermediate plots
         'x_test': None,
@@ -100,6 +103,9 @@ def train_model(model, train_loader, val_loader, training_config):
         - 'save_path': str or None (default: None)
         - 'track_weights': bool (default: False)
         - 'track_samples_every': int (default: 5)
+        - 'track_moments': bool (default: False) - Enable moments tracking
+        - 'moments_to_track': list (default: [1, 2, 3, 4]) - Which moments to track
+        - 'noise_samples': numpy.ndarray or None (default: None) - Noise samples for true moments calculation
         - 'x_test': torch.Tensor or None (default: None)
         - 'y_test': torch.Tensor or None (default: None)
         - 'noise_args': dict or None (default: None)
@@ -117,12 +123,16 @@ def train_model(model, train_loader, val_loader, training_config):
     n_epochs = training_config.get('n_epochs', 100)
     patience = training_config.get('patience', 10)
     learning_rate = training_config.get('learning_rate', 0.001)
-    n_samples = training_config.get('n_samples', 100)
+    n_samples = training_config.get('n_samples', 1000)
+    train_n_samples = training_config.get('train_n_samples', 10)
     device = training_config.get('device', 'cpu')
     verbose = training_config.get('verbose', True)
     save_path = training_config.get('save_path', None)
     track_weights = training_config.get('track_weights', False)
     track_samples_every = training_config.get('track_samples_every', 5)
+    track_moments = training_config.get('track_moments', False)  # NEW
+    moments_to_track = training_config.get('moments_to_track', [1, 2, 3, 4])  # NEW
+    noise_samples = training_config.get('noise_samples', None)  # NEW
     x_test = training_config.get('x_test', None)
     y_test = training_config.get('y_test', None)
     noise_args = training_config.get('noise_args', None)
@@ -138,7 +148,7 @@ def train_model(model, train_loader, val_loader, training_config):
     # Set up loss function based on model type and loss type
     criterion = training_config.get('criterion', None)
     if criterion is None:
-        criterion = _get_loss_function(model, model_type, loss_type, n_samples)
+        criterion = _get_loss_function(model, model_type, loss_type, train_n_samples)
     
     # Initialize variables for early stopping
     best_val_loss = float('inf')
@@ -158,7 +168,8 @@ def train_model(model, train_loader, val_loader, training_config):
     weight_plots_dir = None
     model_checkpoints_dir = None
     if track_weights or (y_test is not None):
-        from experiments.visualisation.weight_tracking import WeightTracker, create_intermediate_sample_plots, create_training_progression_plot
+        from experiments.visualisation.weight_tracking import WeightTracker
+        from experiments.visualisation.plotting import create_intermediate_sample_plots, create_training_progression_plot
         weight_tracker = WeightTracker(model, track_weights=track_weights, 
                                      track_samples_every=track_samples_every)
         
@@ -188,7 +199,7 @@ def train_model(model, train_loader, val_loader, training_config):
             optimizer.zero_grad()
             
             # Compute loss based on model type and loss type
-            loss = _compute_loss(model, x_batch, y_batch, criterion, model_type, loss_type, n_samples)
+            loss = _compute_loss(model, x_batch, y_batch, criterion, model_type, loss_type, train_n_samples)
             
             # Backpropagation
             loss.backward()
@@ -200,7 +211,7 @@ def train_model(model, train_loader, val_loader, training_config):
             train_losses.append(loss.item())
         
         # Validation phase
-        val_loss = _evaluate_loss_internal(model, val_loader, criterion, model_type, loss_type, n_samples, device)
+        val_loss = _evaluate_loss_internal(model, val_loader, criterion, model_type, loss_type, train_n_samples, device)
         
         # Record history
         avg_train_loss = np.mean(train_losses)
@@ -224,9 +235,10 @@ def train_model(model, train_loader, val_loader, training_config):
                 try:
                     # For SimpleAffineNormal, x_test should be None
                     x_for_plot = x_test if model_type in ['MLPSampler', 'FGNEncoderSampler'] else None
+                    print(f"n_samples for intermediate plots: {n_samples}")
                     plot_path = create_intermediate_sample_plots(
                         model, x_for_plot, y_test, noise_args, epoch + 1,
-                        intermediate_plots_dir, n_samples=1000, device=device
+                        intermediate_plots_dir, n_samples=n_samples, device=device
                     )
                     weight_tracker.record_sample_epoch(epoch + 1)
                     
@@ -307,7 +319,7 @@ def train_model(model, train_loader, val_loader, training_config):
                 sample_epochs=weight_tracker.sample_epochs,
                 model_checkpoints_dir=model_checkpoints_dir,
                 model_type=model_type,
-                n_samples=1000,
+                n_samples=n_samples,
                 test_point_idx=0,
                 device=device
             )
@@ -317,11 +329,60 @@ def train_model(model, train_loader, val_loader, training_config):
             if verbose:
                 print(f"Warning: Failed to create training progression plot: {e}")
     
+    # Create training progression moments plot if requested
+    moments_plot_path = None
+    if (track_moments and 
+        weight_tracker is not None and 
+        y_test is not None and 
+        len(weight_tracker.sample_epochs) > 0 and 
+        model_checkpoints_dir is not None):
+        from experiments.visualisation.plotting import create_training_progression_moments_plot
+        moments_plot_path = create_training_progression_moments_plot(
+            model=model,
+            x_test=x_test,
+            y_test=y_test,
+            noise_args=noise_args,
+            base_save_dir=os.path.dirname(save_path) if save_path else None,
+            sample_epochs=weight_tracker.sample_epochs,
+            model_checkpoints_dir=model_checkpoints_dir,
+            model_type=model_type,
+            moments_to_track=moments_to_track,
+            n_samples=n_samples,
+            test_point_idx=0,
+            device=device,
+            noise_samples=noise_samples
+        )
+        if moments_plot_path and verbose:
+            print(f"Created training progression moments plot: {os.path.basename(moments_plot_path)}")
+
+        # create a plot of difference in moment tensors
+        from experiments.visualisation.plotting import create_training_progression_moment_tensors_plot
+        moment_tensors_plot_path = create_training_progression_moment_tensors_plot(
+            model=model,
+            x_test=x_test,
+            y_test=y_test,
+            noise_args=noise_args,
+            base_save_dir=os.path.dirname(save_path) if save_path else None,
+            sample_epochs=weight_tracker.sample_epochs,
+            model_checkpoints_dir=model_checkpoints_dir,
+            model_type=model_type,
+            moments_to_track=moments_to_track,
+            n_samples=n_samples,
+            test_point_idx=0,
+            device=device,
+        )
+        if moment_tensors_plot_path and verbose:
+            print(f"Created training progression moment tensors plot: {os.path.basename(moment_tensors_plot_path)}")
+
     # Update weight evolution info with progression plot
     if weight_evolution_info:
         weight_evolution_info['progression_plot_path'] = progression_plot_path
+        weight_evolution_info['moments_plot_path'] = moments_plot_path
     else:
-        weight_evolution_info = {'progression_plot_path': progression_plot_path}
+        weight_evolution_info = {
+            'progression_plot_path': progression_plot_path,
+            'moments_plot_path': moments_plot_path
+        }
     
     return {
         'model': model,

@@ -459,6 +459,21 @@ def generate_toy_data_multidim_extended(n_samples=500, x_dim=1, y_dim=1, noise_t
     # Generate noise based on distribution type
     if noise_type == 'gaussian':
         noise = np.random.multivariate_normal(np.zeros(y_dim), cov_matrix, size=n_samples)
+        # third moment is zero for multivariate Gaussian
+        # Calculate the fourth central moment tensor for multivariate Gaussian
+        # For multivariate Gaussian X ~ N(μ, Σ), the fourth central moment tensor is:
+        # E[(X_i - μ_i)(X_j - μ_j)(X_k - μ_k)(X_l - μ_l)] 
+        # Using Isserlis' theorem (Wick's theorem), this equals:
+        # Σ_ij * Σ_kl + Σ_ik * Σ_jl + Σ_il * Σ_jk
+        
+        # Use np.einsum for efficient tensor computation
+        sigma_ij_kl = np.einsum('ij,kl->ijkl', cov_matrix, cov_matrix)
+        sigma_ik_jl = np.einsum('ik,jl->ijkl', cov_matrix, cov_matrix)
+        sigma_il_jk = np.einsum('il,jk->ijkl', cov_matrix, cov_matrix)
+        fourth_moment = sigma_ij_kl + sigma_ik_jl + sigma_il_jk
+        
+        # Store in noise_args
+        noise_args['moments'] = {'mean': np.zeros(y_dim), 'cov': cov_matrix, 'third_moment': np.zeros((y_dim,y_dim,y_dim)), 'fourth_moment': fourth_moment}
         
     elif noise_type == 'student_t':
         # Multivariate Student-t distribution
@@ -472,8 +487,42 @@ def generate_toy_data_multidim_extended(n_samples=500, x_dim=1, y_dim=1, noise_t
         # Scale by chi-squared samples
         scaling_factors = np.sqrt(df / chi2_samples)
         noise = normal_samples * scaling_factors[:, np.newaxis]
+
+        def calculate_student_t_moments(df, cov_matrix):
+            p = cov_matrix.shape[0]
+            moments = {}
+
+            # 1st Central Moment (Mean) - Exists for df > 1
+            moments['mean'] = np.zeros(p) if df > 1 else None
+
+            # 2nd Central Moment (Covariance) - Exists for df > 2
+            if df > 2:
+                moments['cov'] = (df / (df - 2)) * cov_matrix
+            else:
+                moments['cov'] = None
+
+            # 3rd Central Moment (Skewness) - Exists for df > 3. It's zero due to symmetry.
+            if df > 3:
+                moments['third_moment'] = np.zeros((p, p, p))
+            else:
+                moments['third_moment'] = None
+
+            # 4th Central Moment (Kurtosis) - Exists for df > 4
+            if df > 4:
+                factor = (df**2) / ((df - 2) * (df - 4))
+                # Using np.einsum for efficient tensor algebra:
+                # E[X_i X_j X_k X_l] = factor * (σ_ij*σ_kl + σ_ik*σ_jl + σ_il*σ_jk)
+                s_ij_kl = np.einsum('ij,kl->ijkl', cov_matrix, cov_matrix)
+                s_ik_jl = np.einsum('ik,jl->ijkl', cov_matrix, cov_matrix)
+                s_il_jk = np.einsum('il,jk->ijkl', cov_matrix, cov_matrix)
+                moments['fourth_moment'] = factor * (s_ij_kl + s_ik_jl + s_il_jk)
+            else:
+                moments['fourth_moment'] = None
+                
+            return moments
         
         noise_args['df'] = df
+        noise_args['moments'] = calculate_student_t_moments(df, cov_matrix)
         
     elif noise_type == 'laplace_symmetric':
         # Symmetric multivariate Laplace distribution
@@ -486,6 +535,31 @@ def generate_toy_data_multidim_extended(n_samples=500, x_dim=1, y_dim=1, noise_t
         
         # Mix according to symmetric Laplace construction
         noise = normal_samples * np.sqrt(exponential_samples)[:, np.newaxis]
+
+        def calculate_laplace_moments(cov_matrix):
+            p = cov_matrix.shape[0]
+            moments = {}
+
+            # 1st Central Moment (Mean)
+            moments['mean'] = np.zeros(p)
+
+            # 2nd Central Moment (Covariance)
+            moments['cov'] = cov_matrix
+
+            # 3rd Central Moment (Skewness) - Zero due to symmetry
+            moments['third_moment'] = np.zeros((p, p, p))
+
+            # 4th Central Moment (Kurtosis)
+            # E[X_i X_j X_k X_l] = 2 * (σ_ij*σ_kl + σ_ik*σ_jl + σ_il*σ_jk)
+            factor = 2.0
+            s_ij_kl = np.einsum('ij,kl->ijkl', cov_matrix, cov_matrix)
+            s_ik_jl = np.einsum('ik,jl->ijkl', cov_matrix, cov_matrix)
+            s_il_jk = np.einsum('il,jk->ijkl', cov_matrix, cov_matrix)
+            moments['fourth_moment'] = factor * (s_ij_kl + s_ik_jl + s_il_jk)
+                
+            return moments
+        
+        noise_args['moments'] = calculate_laplace_moments(cov_matrix)
         
     elif noise_type == 'laplace_asymmetric':
         # Asymmetric multivariate Laplace distribution
@@ -504,8 +578,35 @@ def generate_toy_data_multidim_extended(n_samples=500, x_dim=1, y_dim=1, noise_t
         noise = (normal_samples * np.sqrt(exponential_samples)[:, np.newaxis] * scale[np.newaxis, :] + 
                 location[np.newaxis, :])
         
+
+        def calculate_asymmetric_laplace_moments(cov_matrix, location, scale):
+            p = cov_matrix.shape[0]
+            moments = {}
+
+            # 1st Central Moment is always zero by definition. The mean is the 'location' vector.
+            moments['mean'] = location
+
+            # 2nd Central Moment (Covariance) is scaled by the 'scale' vector.
+            # The new covariance matrix is S * Sigma * S, where S is diag(scale).
+            diag_s = np.diag(scale)
+            scaled_cov_matrix = diag_s @ cov_matrix @ diag_s
+            moments['cov'] = scaled_cov_matrix
+
+            # 3rd Central Moment (Skewness) remains zero as the underlying distribution is symmetric.
+            moments['third_moment'] = np.zeros((p, p, p))
+
+            # 4th Central Moment (Kurtosis) has the same structure, but uses the new scaled covariance.
+            factor = 2.0
+            s_ij_kl = np.einsum('ij,kl->ijkl', scaled_cov_matrix, scaled_cov_matrix)
+            s_ik_jl = np.einsum('ik,jl->ijkl', scaled_cov_matrix, scaled_cov_matrix)
+            s_il_jk = np.einsum('il,jk->ijkl', scaled_cov_matrix, scaled_cov_matrix)
+            moments['fourth_moment'] = factor * (s_ij_kl + s_ik_jl + s_il_jk)
+                
+            return moments
+
         noise_args['asymmetry_params'] = {'location': location, 'scale': scale}
-        
+        noise_args['moments'] = calculate_asymmetric_laplace_moments(cov_matrix, location, scale)
+
     elif noise_type == 'gamma':
         # Multivariate Gamma using latent thinned construction
         shape_params = noise_kwargs.get('shape_params', np.ones(y_dim))
@@ -538,6 +639,44 @@ def generate_toy_data_multidim_extended(n_samples=500, x_dim=1, y_dim=1, noise_t
         
         noise = gamma_samples
         noise_args['shape_params'] = shape_params
+
+        def calculate_gamma_moments(noise):
+            # since not analytically possible, estimate moments from samples
+            # Get the dimensions from your generated noise data
+            n_samples, y_dim = noise.shape
+
+            # 1. First Moment (Mean)
+            # This is a vector of shape (y_dim,)
+            mean_vector = np.mean(noise, axis=0)
+
+            # Demean the noise data to calculate the central moments
+            demeaned_noise = noise - mean_vector
+
+            # 2. Second Central Moment (Covariance Matrix)
+            # This is a matrix of shape (y_dim, y_dim)
+            # np.cov is the standard way to compute this. It uses a (n-1) denominator
+            # for an unbiased estimate, which is standard practice.
+            covariance_matrix = np.cov(noise, rowvar=False)
+
+            # 3. Third Central Moment (Co-skewness Tensor)
+            # This is a 3D tensor of shape (y_dim, y_dim, y_dim).
+            # We use np.einsum for an efficient and readable calculation.
+            coskewness_tensor = np.einsum('ni,nj,nk->ijk', demeaned_noise, demeaned_noise, demeaned_noise) / n_samples
+
+            # 4. Fourth Central Moment (Co-kurtosis Tensor)
+            # This is a 4D tensor of shape (y_dim, y_dim, y_dim, y_dim).
+            cokurtosis_tensor = np.einsum('ni,nj,nk,nl->ijkl', demeaned_noise, demeaned_noise, demeaned_noise, demeaned_noise) / n_samples
+
+            # Store the calculated tensors in the 'moments' key of noise_args
+            moments = {
+                'mean': mean_vector,
+                'cov': covariance_matrix,
+                'third_moment': coskewness_tensor,
+                'fourth_moment': cokurtosis_tensor
+            }
+            return moments
+        
+        noise_args['moments'] = calculate_gamma_moments(noise)
         
     elif noise_type == 'lognormal':
         # Multivariate lognormal distribution
@@ -552,6 +691,66 @@ def generate_toy_data_multidim_extended(n_samples=500, x_dim=1, y_dim=1, noise_t
         noise = np.exp(log_normal_samples) - 1  # Subtract 1 to center around 0
         
         noise_args['sigma'] = sigma
+
+        def calculate_lognormal_moments(sigma, cov_matrix):
+            moments = {}
+            Sigma_z = sigma**2 * cov_matrix
+            diag_z = np.diag(Sigma_z)
+
+            # Analytical mean vector
+            moments['mean'] = np.exp(0.5 * diag_z) - 1
+
+            # Term containing the sum of diagonal elements
+            exp_term_diag = np.exp(0.5 * (diag_z[:, np.newaxis] + diag_z[np.newaxis, :]))
+
+            # Term containing the off-diagonal elements
+            exp_term_cov = np.exp(Sigma_z) - 1
+
+            # Analytical covariance matrix
+            moments['cov'] = exp_term_diag * exp_term_cov
+
+            # Mean of the non-shifted lognormal X
+            mu_X = np.exp(0.5 * diag_z)
+
+            # Matrix of exp(Sigma_z,ij) terms
+            w = np.exp(Sigma_z)
+
+            # Get grid of indices for vectorized calculation
+            i, j, k = np.ogrid[:y_dim, :y_dim, :y_dim]
+
+            # Calculate the tensor using broadcasting
+            mu_tensor = mu_X[i] * mu_X[j] * mu_X[k]
+            w_prod = w[i, j] * w[i, k] * w[j, k]
+            w_sum = w[i, j] + w[i, k] + w[j, k]
+
+            moments['third_moment'] = mu_tensor * (w_prod - w_sum + 2)
+
+            # Get a 4D grid of indices for vectorized calculation
+            i, j, k, l = np.ogrid[:y_dim, :y_dim, :y_dim, :y_dim]
+
+            # Calculate the common factor (product of the means) using broadcasting
+            mu_tensor = mu_X[i] * mu_X[j] * mu_X[k] * mu_X[l]
+
+            # --- Calculate the terms inside the main bracket ---
+
+            # T1: Product of all six w pairs
+            T1 = w[i,j] * w[i,k] * w[i,l] * w[j,k] * w[j,l] * w[k,l]
+
+            # T2: Sum of four products of three w pairs
+            T2 = (w[i,j] * w[i,k] * w[j,k] +  # i,j,k
+                w[i,j] * w[i,l] * w[j,l] +  # i,j,l
+                w[i,k] * w[i,l] * w[k,l] +  # i,k,l
+                w[j,k] * w[j,l] * w[k,l])   # j,k,l
+
+            # T3: Sum of all six w pairs
+            T3 = w[i,j] + w[i,k] + w[i,l] + w[j,k] + w[j,l] + w[k,l]
+
+            # --- Combine all parts to get the final tensor ---
+            moments['fourth_moment'] = mu_tensor * (T1 - T2 + T3 - 3)
+
+            return moments
+        
+        noise_args['moments'] = calculate_lognormal_moments(sigma, cov_matrix)
         
     else:
         raise ValueError(f"Invalid noise type: {noise_type}")
@@ -571,13 +770,7 @@ def generate_toy_data_multidim_extended(n_samples=500, x_dim=1, y_dim=1, noise_t
     # Store sample statistics for quantile reconstruction
     noise_args['sample_mean'] = np.mean(noise, axis=0)
     noise_args['sample_cov'] = np.cov(noise.T)
-    noise_args['sample_quantiles'] = {
-        'q25': np.percentile(noise, 25, axis=0),
-        'q50': np.percentile(noise, 50, axis=0),
-        'q75': np.percentile(noise, 75, axis=0),
-        'q95': np.percentile(noise, 95, axis=0),
-        'q99': np.percentile(noise, 99, axis=0)
-    }
+    noise_args['noise_samples'] = np.copy(noise)
     
     # Combine mean and noise
     y = mean + noise

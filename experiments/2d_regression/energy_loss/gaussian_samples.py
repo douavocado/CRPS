@@ -195,11 +195,15 @@ def run_experiment(seed, run_id, base_config):
         n_epochs=n_epochs,
         patience=patience,
         learning_rate=learning_rate,
-        n_samples=train_n_samples,
+        n_samples=n_samples,
+        train_n_samples=train_n_samples,
         device=device,
         save_path=save_path,
         track_weights=base_config.get('track_weights', False),
         track_samples_every=base_config.get('track_samples_every', 5),
+        track_moments=base_config.get('track_moments', False),
+        moments_to_track=base_config.get('moments_to_track', [1, 2, 3, 4]),
+        noise_samples=data_dict.get('noise_samples', None),
         x_test=x_test_tensor,
         y_test=y_test_tensor,
         noise_args=noise_args
@@ -329,11 +333,11 @@ def main():
     base_config = {
         # Data parameters
         'x_dim': 1,
-        'y_dim': 10,
+        'y_dim': 2,
         'data_size': 2000,
         
         # Noise parameters - NEW SECTION
-        'noise_type': 'laplace_symmetric',  # Options: 'gaussian', 'student_t', 'laplace_symmetric', 'laplace_asymmetric', 'gamma', 'lognormal'
+        'noise_type': 'gaussian',  # Options: 'gaussian', 'student_t', 'laplace_symmetric', 'laplace_asymmetric', 'gamma', 'lognormal'
         'noise_scale': 0.3,
         'target_correlation': 0.6,
         'mean_function': 'zero',
@@ -349,9 +353,9 @@ def main():
         'model_type': 'FGNEncoderSampler',  # Options: 'MLPSampler', 'FGNEncoderSampler', or 'SimpleAffineNormal'
         
         # Model parameters for MLPSampler (ignored if using SimpleAffineNormal)
-        'hidden_size': [16,32,64,128],
+        'hidden_size': [16,32,64],
         'latent_dim': 2,
-        'n_layers': 4,
+        'n_layers': 3,
         'sample_layer_index': 1, # Not used for FGNEncoderSampler
         'dropout_rate': 0.0,
         'zero_inputs': True,
@@ -362,13 +366,15 @@ def main():
         'n_epochs': 100,
         'patience': 10,
         'train_n_samples': 10,
-        'n_samples': 1000,
+        'n_samples': 2000,
         'batch_size': 64,
-        'learning_rate': 0.001,  # Only used for SimpleAffineNormal
+        'learning_rate': 0.0005,  # Only used for SimpleAffineNormal
         
         # Weight tracking parameters
         'track_weights': True,  # Enable weight evolution tracking
         'track_samples_every': 5,  # Create prediction plots every N epochs
+        'track_moments': True,  # NEW: Enable moments tracking during training
+        'moments_to_track': [1, 2, 3, 4],  # NEW: Which moments to track (mean, variance, skewness, kurtosis)
         
         # Loss function
         'loss_function': 'energy_score'

@@ -58,8 +58,27 @@ class FGNEncoderSampler(nn.Module):
     Uses conditional layer normalisation with encoded noise as conditioning.
     """
     def __init__(self, input_size=1, hidden_size=64, latent_dim=16, n_layers=2, 
-                 dropout_rate=0.0, output_size=1, zero_inputs=False, non_linear=True):
+                 dropout_rate=0.0, output_size=1, zero_inputs=False, non_linear=True, 
+                 activation_function='relu'):
         super(FGNEncoderSampler, self).__init__()
+        
+        # Define activation function mapping
+        self.activation_functions = {
+            'relu': nn.ReLU(),
+            'sigmoid': nn.Sigmoid(),
+            'tanh': nn.Tanh(),
+            'leaky_relu': nn.LeakyReLU(),
+            'gelu': nn.GELU(),
+            'elu': nn.ELU(),
+            'softplus': nn.Softplus()
+        }
+        
+        # Validate and set activation function
+        if activation_function not in self.activation_functions:
+            raise ValueError(f"Unsupported activation function: {activation_function}. "
+                           f"Supported functions: {list(self.activation_functions.keys())}")
+        
+        self.activation_fn = self.activation_functions[activation_function]
         
         self.zero_inputs = zero_inputs
         self.input_size = input_size
@@ -147,7 +166,7 @@ class FGNEncoderSampler(nn.Module):
         Forward pass through the network.
         
         Args:
-            x: Input tensor of shape [batch_size, input_size]
+            x: Input tensor of shape [batch_size, input_size] (single timestep only)
             n_samples: Number of samples to generate (optional, defaults to 100)
             
         Returns:
@@ -155,6 +174,13 @@ class FGNEncoderSampler(nn.Module):
         """
         if n_samples is None:
             n_samples = 10
+        
+        # Validate input shape - only single timestep supported
+        if len(x.shape) != 2:
+            raise ValueError(f"FGNEncoderSampler only supports single timestep inputs. "
+                           f"Expected shape [batch_size, input_size], got {x.shape}. "
+                           f"If you have time series data [batch_size, timesteps, dims], "
+                           f"this model is not suitable for multi-timestep inputs.")
         
         batch_size = x.shape[0]
         device = x.device
@@ -189,7 +215,7 @@ class FGNEncoderSampler(nn.Module):
             
             # Apply activation (except for last layer)
             if i < len(self.layers) - 1 and self.non_linear:
-                current_input = F.relu(current_input)
+                current_input = self.activation_fn(current_input)
             
             # Apply dropout (except for last layer)
             if self.dropouts is not None and i < len(self.layers) - 1:
