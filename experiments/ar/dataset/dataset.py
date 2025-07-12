@@ -135,10 +135,17 @@ class MultivariatARDataset(Dataset):
                 if len(self.A_matrices) != self.ar_order:
                     raise ValueError(f"A_matrices list must have length {self.ar_order}")
                 for i, A in enumerate(self.A_matrices):
+                    # Convert to numpy array if it's a nested list (from YAML)
+                    if isinstance(A, list):
+                        A = np.array(A)
+                        self.A_matrices[i] = A  # Update the list in place
                     if A.shape != (self.dimension, self.dimension):
                         raise ValueError(f"A_matrices[{i}] must have shape ({self.dimension}, {self.dimension})")
         
         if self.noise_cov is not None:
+            # Convert to numpy array if it's a nested list (from YAML)
+            if isinstance(self.noise_cov, list):
+                self.noise_cov = np.array(self.noise_cov)
             if self.noise_cov.shape != (self.dimension, self.dimension):
                 raise ValueError(f"noise_cov must have shape ({self.dimension}, {self.dimension})")
     

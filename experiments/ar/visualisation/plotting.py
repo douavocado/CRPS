@@ -10,9 +10,6 @@ from typing import Dict, List, Optional, Tuple, Union
 import sys
 from pathlib import Path
 
-# Add parent directories to path for imports
-sys.path.append(str(Path(__file__).parent.parent.parent))
-
 from experiments.ar.dataset.dataset import MultivariatARDataset
 from experiments.ar.training.train_functions import generate_autoregressive_samples
 
@@ -166,7 +163,7 @@ def plot_ar_inference(
         plt.savefig(save_path, dpi=300, bbox_inches='tight')
         print(f"Figure saved to: {save_path}")
     
-    plt.show()
+    # plt.show()
     
     return results
 
@@ -180,6 +177,9 @@ def _get_ground_truth_distributions(
     """
     Get ground truth distribution parameters for each output timestep.
     
+    Computes conditional distributions based only on data available during 
+    autoregressive inference (input sequence + expected values of previous predictions).
+    
     Returns:
         List of dicts containing 'mean', 'cov' for each timestep
     """
@@ -188,8 +188,8 @@ def _get_ground_truth_distributions(
     series_idx = sample_data['series_idx'].item()
     time_start = sample_data['time_start'].item()
     
-    # Get the full series for context
-    full_series = dataset.get_full_series(series_idx, normalised=True)
+    # Get the input sequence (only data available to the model)
+    inputs = sample_data['input']  # Shape: [input_timesteps, dimension]
     
     # Extract AR parameters from ground truth
     generation_metadata = ground_truth_params['generation_metadata']
@@ -197,6 +197,7 @@ def _get_ground_truth_distributions(
     noise_cov = generation_metadata['noise_cov']
     dimension = dataset.config['dimension']
     ar_order = dataset.config['ar_order']
+    input_timesteps = dataset.config['input_timesteps']
     
     # Convert to numpy if they're tensors
     if torch.is_tensor(A_matrices):
@@ -206,38 +207,71 @@ def _get_ground_truth_distributions(
     
     if torch.is_tensor(noise_cov):
         noise_cov = noise_cov.numpy()
+        
+    if torch.is_tensor(inputs):
+        inputs = inputs.numpy()
     
     distributions = []
     
+    # Build autoregressive context starting with input sequence
+    # This simulates what's available during actual AR inference
+    ar_context = inputs.copy()  # Start with input sequence
+    
+    # Track accumulated prediction covariances for proper uncertainty propagation
+    accumulated_covariances = []  # Store covariance for each prediction step
+    
     # For each output timestep, compute the conditional distribution
     for t in range(output_timesteps):
-        # Time index for this prediction
-        pred_time = time_start + dataset.config['input_timesteps'] + t
+        # Current prediction time
+        pred_time = time_start + input_timesteps + t
         
-        # Get the AR context (previous ar_order timesteps)
-        if pred_time >= ar_order:
-            # We have enough history
-            context_start = pred_time - ar_order
-            context = full_series[context_start:pred_time]  # Shape: [ar_order, dimension]
-            
-            # Compute conditional mean: μ = Σ A_i * y_{t-i}
-            mean = np.zeros(dimension)
-            for i, A_i in enumerate(A_matrices):
-                if i < len(context):
-                    mean += A_i @ context[-(i+1)]  # A_i @ y_{t-i-1}
-            
-            # Covariance is the noise covariance (for AR processes)
+        # Get the most recent ar_order timesteps for conditioning
+        if len(ar_context) >= ar_order:
+            # Use the last ar_order timesteps
+            context_for_prediction = ar_context[-ar_order:]
+        else:
+            # If we don't have enough history, pad with zeros or use available data
+            context_for_prediction = ar_context
+        
+        # Compute conditional mean: μ = Σ A_i * y_{t-i}
+        mean = np.zeros(dimension)
+        for i, A_i in enumerate(A_matrices):
+            if i < len(context_for_prediction):
+                # Use y_{t-i-1} for AR(p) where i=0 corresponds to lag-1
+                lag_idx = -(i + 1)
+                if abs(lag_idx) <= len(context_for_prediction):
+                    mean += A_i @ context_for_prediction[lag_idx]
+        
+        # Compute proper prediction covariance accounting for uncertainty propagation
+        if t == 0:
+            # First prediction: only noise uncertainty
             cov = noise_cov.copy()
         else:
-            # Not enough history - use unconditional distribution (approximation)
-            mean = np.zeros(dimension)
+            # Subsequent predictions: noise + accumulated uncertainty from previous predictions
             cov = noise_cov.copy()
+            
+            # Add uncertainty from previous predictions weighted by AR coefficients
+            for i, A_i in enumerate(A_matrices):
+                # Check if we have a prediction at the required lag
+                pred_lag_idx = t - (i + 1)  # Index in our prediction sequence
+                if pred_lag_idx >= 0 and pred_lag_idx < len(accumulated_covariances):
+                    # Add A_i * Σ_{t-i-1} * A_i^T to account for uncertainty propagation
+                    prev_cov = accumulated_covariances[pred_lag_idx]
+                    cov += A_i @ prev_cov @ A_i.T # + noise_cov.copy()
+        
+        # Store this step's covariance for future propagation
+        accumulated_covariances.append(cov.copy())
         
         distributions.append({
             'mean': mean,
-            'cov': cov,
-            'time_index': pred_time
+            'cov': cov.copy(),
+            'time_index': pred_time,
+            'forecast_step': t + 1  # 1-indexed forecast horizon
         })
+        
+        # For next iteration: append the expected value (mean) of current prediction
+        # This simulates using the expected value rather than unknown ground truth
+        ar_context = np.vstack([ar_context, mean.reshape(1, -1)])
     
     return distributions
 
@@ -361,7 +395,7 @@ def _plot_timestep_predictions(
 
 def _plot_1d_predictions(ax, predictions, target, gt_distribution, contour_levels, kde_bandwidth, timestep_label):
     """Plot 1D predictions with KDE and ground truth."""
-    # Create KDE
+    # Create KDE using ALL samples
     kde = KernelDensity(bandwidth=kde_bandwidth, kernel='gaussian')
     kde.fit(predictions.reshape(-1, 1))
     
@@ -389,8 +423,18 @@ def _plot_1d_predictions(ax, predictions, target, gt_distribution, contour_level
     # Plot target
     ax.axvline(target.item(), color='red', linestyle='-', linewidth=2, label='True Target')
     
+    # Sample points for scatter plot if too many
+    if len(predictions) > 100:
+        np.random.seed(42)  # For reproducibility
+        scatter_indices = np.random.choice(len(predictions), size=100, replace=False)
+        scatter_predictions = predictions[scatter_indices]
+        scatter_label = f'Samples (showing 100/{len(predictions)})'
+    else:
+        scatter_predictions = predictions
+        scatter_label = f'Samples (n={len(predictions)})'
+    
     # Plot samples
-    ax.scatter(predictions, np.zeros_like(predictions), alpha=0.5, color='blue', s=10, label=f'Samples (n={len(predictions)})')
+    ax.scatter(scatter_predictions, np.zeros_like(scatter_predictions), alpha=0.5, color='blue', s=10, label=scatter_label)
     
     ax.set_title(f'Predictions at {timestep_label}', fontsize=10)
     ax.set_xlabel('Value')
@@ -402,14 +446,24 @@ def _plot_1d_predictions(ax, predictions, target, gt_distribution, contour_level
 def _plot_2d_predictions(ax, predictions, target, gt_distribution, contour_levels, kde_bandwidth, 
                         timestep_label, dim1, dim2):
     """Plot 2D predictions with KDE contours and ground truth."""
-    # Plot predicted samples
-    ax.scatter(predictions[:, 0], predictions[:, 1], alpha=0.6, s=20, color='blue', 
-              label=f'Predicted Samples (n={len(predictions)})')
+    # Sample points for scatter plot if too many
+    if len(predictions) > 100:
+        np.random.seed(42)  # For reproducibility
+        scatter_indices = np.random.choice(len(predictions), size=100, replace=False)
+        scatter_predictions = predictions[scatter_indices]
+        scatter_label = f'Predicted Samples (showing 100/{len(predictions)})'
+    else:
+        scatter_predictions = predictions
+        scatter_label = f'Predicted Samples (n={len(predictions)})'
+    
+    # Plot predicted samples (subset for visual clarity)
+    ax.scatter(scatter_predictions[:, 0], scatter_predictions[:, 1], alpha=0.6, s=20, color='blue', 
+              label=scatter_label)
     
     # Plot target
     ax.plot(target[0], target[1], 'ro', markersize=8, label='True Target')
     
-    # Create KDE contours for predictions
+    # Create KDE contours for predictions using ALL samples
     try:
         _plot_kde_contours(ax, predictions, contour_levels, kde_bandwidth, 'blue', 'Predicted')
     except Exception as e:
@@ -466,13 +520,6 @@ def _plot_kde_contours(ax, samples, contour_levels, bandwidth, color, label_pref
     
     # Plot contours
     contours = ax.contour(xx, yy, density, levels=contour_values, colors=color, linestyles='--', alpha=0.8)
-    
-    # Add labels using the correctly matched level and contour_val
-    if len(contour_data) > 0:
-        # Only label the highest confidence level (lowest density value after sorting)
-        level, contour_val = contour_data[0]  # First item after sorting by density
-        ax.clabel(contours, levels=[contour_val], inline=True, fontsize=8, 
-                 fmt=f'{label_prefix} {int(level*100)}%')
 
 
 def _plot_ground_truth_contours(ax, gt_distribution, contour_levels, dim1, dim2, color, label_prefix):
@@ -511,13 +558,6 @@ def _plot_ground_truth_contours(ax, gt_distribution, contour_levels, dim1, dim2,
     
     # Plot contours
     contours = ax.contour(xx, yy, density, levels=contour_values, colors=color, alpha=0.8)
-    
-    # Add labels using the correctly matched level and contour_val
-    if len(contour_data) > 0:
-        # Only label the highest confidence level (lowest density value after sorting)
-        level, contour_val = contour_data[0]  # First item after sorting by density
-        ax.clabel(contours, levels=[contour_val], inline=True, fontsize=8, 
-                 fmt=f'{label_prefix} {int(level*100)}%')
 
 
 def compare_model_predictions(
@@ -593,10 +633,20 @@ def compare_model_predictions(
         final_pred = predictions[0, :, -1, :2].cpu()  # [n_samples, 2]
         final_target = targets[0, -1, :2]  # [2]
         
-        ax.scatter(final_pred[:, 0], final_pred[:, 1], alpha=0.6, s=20, label=f'{model_name} Samples')
+        # Sample points for scatter plot if too many
+        if len(final_pred) > 100:
+            np.random.seed(42)  # For reproducibility
+            scatter_indices = np.random.choice(len(final_pred), size=100, replace=False)
+            scatter_pred = final_pred[scatter_indices]
+            scatter_label = f'{model_name} Samples (showing 100/{len(final_pred)})'
+        else:
+            scatter_pred = final_pred
+            scatter_label = f'{model_name} Samples'
+        
+        ax.scatter(scatter_pred[:, 0], scatter_pred[:, 1], alpha=0.6, s=20, label=scatter_label)
         ax.plot(final_target[0], final_target[1], 'ro', markersize=8, label='True Target')
         
-        # Add KDE contours
+        # Add KDE contours using ALL samples
         try:
             _plot_kde_contours(ax, final_pred.numpy(), [0.65, 0.95], 0.1, 'blue', model_name)
         except:
