@@ -1,0 +1,35 @@
+DISCRIMINATION EXPERIMENT SUMMARY REPORT
+==================================================
+
+CONFIGURATION:
+- Number of trials: 10
+- Sample sizes: M=100, N=100
+- Ground truth distributions: 5
+- Perturbations: 3
+- Distance functions: 2
+
+RESULTS SUMMARY:
+- Null hypothesis experiments: 10
+- Alternative hypothesis experiments: 30
+
+POWER ANALYSIS:
+Average statistical power (α=0.05) by distance function:
+  2d_location_shift_energy: 0.900
+  location_shift_energy: 0.850
+  2d_location_shift_crps: 0.800
+  location_shift_crps: 0.775
+  2d_heavy_tail_perturbation_energy: 0.500
+  2d_heavy_tail_perturbation_crps: 0.400
+  2d_scale_perturbation_crps: 0.300
+  heavy_tail_perturbation_crps: 0.225
+  2d_scale_perturbation_energy: 0.200
+  heavy_tail_perturbation_energy: 0.175
+  scale_perturbation_crps: 0.100
+  scale_perturbation_energy: 0.025
+
+RECOMMENDATIONS:
+- Best performing distance function: 2d_location_shift_energy
+- Consider using 2d_location_shift_energy for discrimination tasks
+- Review individual plots for detailed analysis
+- Consider adjusting sample sizes if power is low
+- Experiment with different perturbation strengths

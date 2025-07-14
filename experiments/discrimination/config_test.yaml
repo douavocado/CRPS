@@ -1,0 +1,179 @@
+advanced:
+  memory_optimization: true
+  n_jobs: -1
+  parallel_processing: false
+  verbose: true
+analysis:
+  confidence_level: 0.95
+  effect_size_calculation: true
+  power_analysis: true
+  quantiles:
+  - 0.05
+  - 0.25
+  - 0.5
+  - 0.75
+  - 0.95
+  - 0.99
+  significance_thresholds:
+  - 0.01
+  - 0.05
+  - 0.1
+distances:
+- function: crps_distance
+  module: crps_distance
+  name: crps
+  parameters:
+    biased: true
+- function: energy_distance
+  module: energy_distance
+  name: energy
+  parameters:
+    beta: 1.0
+    biased: true
+experiment:
+  generate_plots: true
+  n_trials: 10
+  name: discrimination_experiment
+  output_dir: results
+  random_seed: 42
+  save_raw_distances: true
+  save_statistics: true
+ground_truth_distributions:
+- dimension: 2
+  name: gaussian_2d
+  parameters:
+    cov:
+    - - 1.0
+      - 0.0
+    - - 0.0
+      - 1.0
+    mean:
+    - 0.0
+    - 0.0
+  type: gaussian
+- dimension: 2
+  name: gaussian_correlated
+  parameters:
+    cov:
+    - - 1.0
+      - 0.5
+    - - 0.5
+      - 1.0
+    mean:
+    - 0.0
+    - 0.0
+  type: gaussian
+- dimension: 2
+  name: student_t_2d
+  parameters:
+    df: 3.0
+    loc:
+    - 0.0
+    - 0.0
+    scale:
+    - - 1.0
+      - 0.0
+    - - 0.0
+      - 1.0
+  type: student_t
+- dimension: 2
+  name: mixture_gaussian
+  parameters:
+    covariances:
+    - - - 1.0
+        - 0.0
+      - - 0.0
+        - 1.0
+    - - - 0.5
+        - 0.0
+      - - 0.0
+        - 0.5
+    means:
+    - - 0.0
+      - 0.0
+    - - 2.0
+      - 2.0
+    n_components: 2
+    weights:
+    - 0.6
+    - 0.4
+  type: mixture_gaussian
+- dimension: 2
+  name: uniform_2d
+  parameters:
+    high:
+    - 2.0
+    - 2.0
+    low:
+    - -2.0
+    - -2.0
+  type: uniform
+perturbations:
+- description: Add constant shift to ground truth
+  name: location_shift
+  parameters:
+    coefficients:
+    - 1.0
+    - 1.0
+    perturbation_sampler:
+      parameters:
+        constant:
+        - 0.5
+        - 0.0
+      type: constant
+  type: composition
+- description: Add scaled noise to ground truth
+  name: scale_perturbation
+  parameters:
+    coefficients:
+    - 1.0
+    - 0.2
+    perturbation_sampler:
+      parameters:
+        cov:
+        - - 1.0
+          - 0.0
+        - - 0.0
+          - 1.0
+        mean:
+        - 0.0
+        - 0.0
+      type: gaussian
+  type: composition
+- description: Add heavy-tailed noise
+  name: heavy_tail_perturbation
+  parameters:
+    coefficients:
+    - 1.0
+    - 0.1
+    perturbation_sampler:
+      parameters:
+        df: 1.0
+        loc:
+        - 0.0
+        - 0.0
+        scale:
+        - - 1.0
+          - 0.0
+        - - 0.0
+          - 1.0
+      type: student_t
+  type: composition
+plotting:
+  dpi: 300
+  figsize:
+  - 10
+  - 8
+  plots:
+  - distance_distributions
+  - power_curves
+  - roc_curves
+  - qq_plots
+  - box_plots
+  save_formats:
+  - png
+  - pdf
+  style: seaborn-v0_8
+sample_sizes:
+  M: 100
+  N: 100

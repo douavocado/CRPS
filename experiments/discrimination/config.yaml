@@ -1,0 +1,108 @@
+# Discrimination Experiment Configuration
+# This file contains all configurable parameters for the discrimination experiments
+
+# General experiment settings
+experiment:
+  name: "discrimination_experiment"
+  n_trials: 10000  # Number of trials for each experiment
+  random_seed: 42
+  output_dir: "results"
+  save_raw_distances: true  # Whether to save raw distance values
+  save_statistics: true     # Whether to save summary statistics
+  generate_plots: true      # Whether to generate visualisation plots
+
+# Sample sizes for the experiments
+sample_sizes:
+  M: 10   # Sample size for first set
+  N: 2   # Sample size for second set
+  
+# Distance functions to test
+distances:
+  - name: "crps"
+    module: "crps_distance"
+    function: "crps_distance"
+    parameters:
+      biased: true
+      
+  - name: "energy"
+    module: "energy_distance" 
+    function: "energy_distance"
+    parameters:
+      beta: 1.0
+      biased: true
+
+# Ground truth distributions to test
+ground_truth_distributions:
+  - name: "gaussian_2d"
+    type: "gaussian"
+    dimension: 10
+      
+  - name: "gaussian_correlated"
+    type: "gaussian"
+    dimension: 10
+
+# Perturbation types for alternative hypothesis testing
+perturbations:
+  - name: "location_shift"
+    type: "composition"
+    description: "Add constant shift to ground truth"
+    parameters:
+      coefficients: [1.0, 1.0]  # [ground_truth_coeff, perturbation_coeff]
+      perturbation_sampler:
+        type: "constant"
+        parameters:
+          constant: [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]  # Shift in x-direction
+          
+  - name: "scale_perturbation"
+    type: "composition"
+    description: "Add scaled noise to ground truth"
+    parameters:
+      coefficients: [1.0, 1.0]
+      perturbation_sampler:
+        type: "gaussian"
+          
+  - name: "heavy_tail_perturbation"
+    type: "composition"
+    description: "Add heavy-tailed noise"
+    parameters:
+      coefficients: [1.0, 0.1]
+      perturbation_sampler:
+        type: "student_t"
+        parameters:
+          df: 3.0  # Very heavy tails
+
+# Statistical analysis settings
+analysis:
+  confidence_level: 0.95
+  power_analysis: true
+  effect_size_calculation: true
+  
+  # Thresholds for determining significant difference
+  significance_thresholds:
+    - 0.01
+    - 0.05
+    - 0.10
+    
+  # Quantiles to compute for distance distributions
+  quantiles: [0.05, 0.25, 0.5, 0.75, 0.95, 0.99]
+
+# Plotting settings
+plotting:
+  dpi: 300
+  figsize: [10, 8]
+  style: "seaborn-v0_8"
+  save_formats: ["png", "pdf"]
+  
+  # Types of plots to generate
+  plots:
+    - "distance_distributions"  # Histograms of null vs alternative
+    - "power_curves"           # Power vs effect size
+    - "roc_curves"            # ROC analysis
+    - "box_plots"             # Box plots of distances
+    
+# Advanced options
+advanced:
+  parallel_processing: false  # Fixed: prevents identical random states across workers
+  n_jobs: -1  # Use all available cores
+  memory_optimization: true
+  verbose: true 

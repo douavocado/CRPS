@@ -394,6 +394,199 @@ class WishartSampler(BaseSampler):
         return samples
 
 
+class ConstantSampler(BaseSampler):
+    """Sampler that always returns the same constant value."""
+    
+    def __init__(self, dimension: int, constant: Optional[np.ndarray] = None, **kwargs):
+        """
+        Initialise the constant sampler.
+        
+        Args:
+            dimension: The dimensionality of the distribution
+            constant: The constant value to return (defaults to zero vector)
+            **kwargs: Additional parameters
+        """
+        super().__init__(dimension, **kwargs)
+        
+        self.constant = constant if constant is not None else np.zeros(dimension)
+        
+        # Validate inputs
+        if self.constant.shape != (dimension,):
+            raise ValueError(f"Constant must have shape ({dimension},)")
+    
+    def sample(self, n_samples: int) -> np.ndarray:
+        """Return the constant value repeated n_samples times."""
+        if n_samples <= 0:
+            raise ValueError("Number of samples must be positive")
+        
+        # Repeat the constant value n_samples times
+        samples = np.tile(self.constant, (n_samples, 1))
+        
+        return samples
+
+
+class DiscreteSampler(BaseSampler):
+    """Sampler for discrete multivariate distributions with finite support."""
+    
+    def __init__(self, dimension: int, support: np.ndarray, 
+                 probabilities: Optional[np.ndarray] = None, **kwargs):
+        """
+        Initialise the discrete sampler.
+        
+        Args:
+            dimension: The dimensionality of the distribution
+            support: Support points of shape (n_support_points, dimension)
+            probabilities: Probabilities for each support point (defaults to uniform)
+            **kwargs: Additional parameters
+        """
+        super().__init__(dimension, **kwargs)
+        
+        if support.ndim != 2 or support.shape[1] != dimension:
+            raise ValueError(f"Support must have shape (n_support_points, {dimension})")
+        
+        self.support = support
+        self.n_support_points = support.shape[0]
+        
+        if probabilities is None:
+            probabilities = np.ones(self.n_support_points) / self.n_support_points
+        
+        self.probabilities = probabilities
+        
+        # Validate inputs
+        if self.probabilities.shape != (self.n_support_points,):
+            raise ValueError(f"Probabilities must have shape ({self.n_support_points},)")
+        if not np.allclose(self.probabilities.sum(), 1.0):
+            raise ValueError("Probabilities must sum to 1")
+        if np.any(self.probabilities < 0):
+            raise ValueError("Probabilities must be non-negative")
+    
+    def sample(self, n_samples: int) -> np.ndarray:
+        """Sample from discrete distribution."""
+        if n_samples <= 0:
+            raise ValueError("Number of samples must be positive")
+        
+        # Sample indices according to probabilities
+        indices = self.rng.choice(self.n_support_points, n_samples, p=self.probabilities)
+        
+        # Return corresponding support points
+        samples = self.support[indices]
+        
+        return samples
+
+
+class CompositionSampler(BaseSampler):
+    """Sampler that creates linear combinations of samples from multiple samplers."""
+    
+    def __init__(self, dimension: int, samplers: list, 
+                 coefficients: Optional[np.ndarray] = None, **kwargs):
+        """
+        Initialise the composition sampler.
+        
+        Args:
+            dimension: The dimensionality of the distribution
+            samplers: List of sampler objects
+            coefficients: Coefficients for linear combination (defaults to equal weights)
+            **kwargs: Additional parameters
+        """
+        super().__init__(dimension, **kwargs)
+        
+        if not samplers:
+            raise ValueError("At least one sampler must be provided")
+        
+        # Validate that all samplers have the same dimension
+        for i, sampler in enumerate(samplers):
+            if not hasattr(sampler, 'dimension') or sampler.dimension != dimension:
+                raise ValueError(f"Sampler {i} must have dimension {dimension}")
+        
+        self.samplers = samplers
+        self.n_samplers = len(samplers)
+        
+        if coefficients is None:
+            coefficients = np.ones(self.n_samplers) / self.n_samplers
+        
+        self.coefficients = coefficients
+        
+        # Validate inputs
+        if self.coefficients.shape != (self.n_samplers,):
+            raise ValueError(f"Coefficients must have shape ({self.n_samplers},)")
+    
+    def sample(self, n_samples: int) -> np.ndarray:
+        """Sample linear combinations from the component samplers."""
+        if n_samples <= 0:
+            raise ValueError("Number of samples must be positive")
+        
+        # Initialize samples array
+        samples = np.zeros((n_samples, self.dimension))
+        
+        # Sample from each sampler and combine
+        for i, sampler in enumerate(self.samplers):
+            component_samples = sampler.sample(n_samples)
+            samples += self.coefficients[i] * component_samples
+        
+        return samples
+
+
+class MixtureSampler(BaseSampler):
+    """Sampler for mixture distributions of multiple samplers."""
+    
+    def __init__(self, dimension: int, samplers: list, 
+                 weights: Optional[np.ndarray] = None, **kwargs):
+        """
+        Initialise the mixture sampler.
+        
+        Args:
+            dimension: The dimensionality of the distribution
+            samplers: List of sampler objects
+            weights: Mixture weights (defaults to uniform)
+            **kwargs: Additional parameters
+        """
+        super().__init__(dimension, **kwargs)
+        
+        if not samplers:
+            raise ValueError("At least one sampler must be provided")
+        
+        # Validate that all samplers have the same dimension
+        for i, sampler in enumerate(samplers):
+            if not hasattr(sampler, 'dimension') or sampler.dimension != dimension:
+                raise ValueError(f"Sampler {i} must have dimension {dimension}")
+        
+        self.samplers = samplers
+        self.n_samplers = len(samplers)
+        
+        if weights is None:
+            weights = np.ones(self.n_samplers) / self.n_samplers
+        
+        self.weights = weights
+        
+        # Validate inputs
+        if self.weights.shape != (self.n_samplers,):
+            raise ValueError(f"Weights must have shape ({self.n_samplers},)")
+        if not np.allclose(self.weights.sum(), 1.0):
+            raise ValueError("Weights must sum to 1")
+        if np.any(self.weights < 0):
+            raise ValueError("Weights must be non-negative")
+    
+    def sample(self, n_samples: int) -> np.ndarray:
+        """Sample from mixture of samplers."""
+        if n_samples <= 0:
+            raise ValueError("Number of samples must be positive")
+        
+        # Sample component assignments
+        components = self.rng.choice(self.n_samplers, n_samples, p=self.weights)
+        
+        # Generate samples
+        samples = np.zeros((n_samples, self.dimension))
+        for i in range(self.n_samplers):
+            mask = components == i
+            n_comp_samples = mask.sum()
+            
+            if n_comp_samples > 0:
+                comp_samples = self.samplers[i].sample(n_comp_samples)
+                samples[mask] = comp_samples
+        
+        return samples
+
+
 # Convenience function to create samplers
 def create_sampler(distribution_type: str, dimension: int, **kwargs) -> BaseSampler:
     """
@@ -401,7 +594,8 @@ def create_sampler(distribution_type: str, dimension: int, **kwargs) -> BaseSamp
     
     Args:
         distribution_type: Type of distribution ('gaussian', 'student_t', 'laplacian', 
-                          'uniform', 'dirichlet', 'mixture_gaussian', 'wishart')
+                          'uniform', 'dirichlet', 'mixture_gaussian', 'wishart',
+                          'constant', 'discrete', 'composition', 'mixture')
         dimension: Dimensionality of the distribution
         **kwargs: Additional parameters for the specific sampler
         
@@ -415,7 +609,11 @@ def create_sampler(distribution_type: str, dimension: int, **kwargs) -> BaseSamp
         'uniform': MultivariateUniformSampler,
         'dirichlet': DirichletSampler,
         'mixture_gaussian': MixtureGaussianSampler,
-        'wishart': WishartSampler
+        'wishart': WishartSampler,
+        'constant': ConstantSampler,
+        'discrete': DiscreteSampler,
+        'composition': CompositionSampler,
+        'mixture': MixtureSampler
     }
     
     if distribution_type not in samplers:

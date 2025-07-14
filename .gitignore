@@ -68,14 +68,16 @@ figures/
 **/figures/
 **/saved_models/
 **/*.png
+**/plots/
 
 
 # Results files
-**/results/**
-**/evaluation/**
+**/results/
+**/evaluation/
 
 # data files
-**/data/**
+**/data/
+**/raw_data/
 
 # PyTorch model files
 *.pt
