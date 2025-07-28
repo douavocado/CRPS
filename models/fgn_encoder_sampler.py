@@ -1,8 +1,6 @@
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from torchnaut.crps import EpsilonSampler, crps_loss, crps_loss_mv
-from torchnaut import crps
+from torchnaut.crps import crps_loss, crps_loss_mv
 
 from common.losses import crps_loss_general
 
@@ -141,7 +139,7 @@ class FGNEncoderSampler(nn.Module):
             if dropout_rate > 0:
                 self.dropouts.append(nn.Dropout(dropout_rate))
     
-    def _generate_encoded_noise(self, batch_size, n_samples, device):
+    def _generate_encoded_noise(self, batch_size, n_samples, device, random_seed=None):
         """
         Generate encoded noise for conditioning.
         
@@ -149,31 +147,48 @@ class FGNEncoderSampler(nn.Module):
             batch_size: Batch size
             n_samples: Number of samples to generate
             device: Device to generate noise on
+            random_seed: Random seed for deterministic sampling. Only used when n_samples=1.
             
         Returns:
             encoded_noise: [batch_size, n_samples, latent_dim]
         """
+        # Generate noise with optional deterministic seeding
+        if random_seed is not None:
+            # Save current random state
+            current_state = torch.get_rng_state()
+            # Set deterministic seed
+            torch.manual_seed(random_seed)
+        
         # Sample noise from standard multivariate normal
         noise = torch.randn(batch_size, n_samples, self.latent_dim, device=device)
+        
+        # Restore random state if we used a seed
+        if random_seed is not None:
+            torch.set_rng_state(current_state)
         
         # Encode noise through transformation matrix
         encoded_noise = self.noise_encoder(noise)
         
         return encoded_noise
     
-    def forward(self, x, n_samples=None):
+    def forward(self, x, n_samples=None, random_seed=None):
         """
         Forward pass through the network.
         
         Args:
             x: Input tensor of shape [batch_size, input_size] (single timestep only)
-            n_samples: Number of samples to generate (optional, defaults to 100)
+            n_samples: Number of samples to generate (optional, defaults to 10)
+            random_seed: Random seed for deterministic sampling. Only used when n_samples=1.
             
         Returns:
             samples: Predicted samples of shape [batch_size, n_samples, output_size]
         """
         if n_samples is None:
             n_samples = 10
+        
+        # Validate random_seed usage
+        if random_seed is not None and n_samples != 1:
+            raise ValueError(f"random_seed can only be used when n_samples=1, but got n_samples={n_samples}")
         
         # Validate input shape - only single timestep supported
         if len(x.shape) != 2:
@@ -186,7 +201,7 @@ class FGNEncoderSampler(nn.Module):
         device = x.device
         
         # Generate encoded noise for conditioning
-        encoded_noise = self._generate_encoded_noise(batch_size, n_samples, device)
+        encoded_noise = self._generate_encoded_noise(batch_size, n_samples, device, random_seed)
         
         # Prepare input
         if self.zero_inputs:
@@ -223,7 +238,7 @@ class FGNEncoderSampler(nn.Module):
         
         return current_input  # shape [batch_size, n_samples, output_size]
     
-    def crps_loss(self, x, y, n_samples=None):
+    def crps_loss(self, x, y, n_samples=None, random_seed=None):
         """
         Compute CRPS loss using the torchnaut implementation.
         
@@ -231,12 +246,13 @@ class FGNEncoderSampler(nn.Module):
             x: Input tensor of shape [batch_size, input_size]
             y: Target tensor of shape [batch_size, output_size]
             n_samples: Number of samples to generate (optional)
+            random_seed: Random seed for deterministic sampling. Only used when n_samples=1.
             
         Returns:
             loss: Scalar CRPS loss (mean across batch and output dimensions)
         """
         # Generate samples
-        samples = self.forward(x, n_samples=n_samples)  # shape [batch_size, n_samples, output_size]
+        samples = self.forward(x, n_samples=n_samples, random_seed=random_seed)  # shape [batch_size, n_samples, output_size]
         
         # Compute CRPS loss using torchnaut
         if self.output_size > 1:
@@ -247,7 +263,7 @@ class FGNEncoderSampler(nn.Module):
         # Return mean loss (scalar)
         return per_sample_loss.mean()
     
-    def energy_score_loss(self, x, y, n_samples=None):
+    def energy_score_loss(self, x, y, n_samples=None, random_seed=None):
         """
         Compute energy score loss using the torchnaut implementation.
         
@@ -255,11 +271,12 @@ class FGNEncoderSampler(nn.Module):
             x: Input tensor of shape [batch_size, input_size]
             y: Target tensor of shape [batch_size, output_size]
             n_samples: Number of samples to generate (optional)
+            random_seed: Random seed for deterministic sampling. Only used when n_samples=1.
             
         Returns:
             loss: Scalar energy score loss (mean across batch and output dimensions)
         """
-        samples = self.forward(x, n_samples=n_samples)  # shape [batch_size, n_samples, output_size]
+        samples = self.forward(x, n_samples=n_samples, random_seed=random_seed)  # shape [batch_size, n_samples, output_size]
         
         # Compute energy score loss using torchnaut
         if self.output_size > 1:

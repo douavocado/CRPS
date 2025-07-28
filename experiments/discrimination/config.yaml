@@ -14,7 +14,7 @@ experiment:
 # Sample sizes for the experiments
 sample_sizes:
   M: 10   # Sample size for first set
-  N: 2   # Sample size for second set
+  N: 1   # Sample size for second set
   
 # Distance functions to test
 distances:
@@ -40,6 +40,12 @@ ground_truth_distributions:
   - name: "gaussian_correlated"
     type: "gaussian"
     dimension: 10
+  
+  - name: "gaussian_mixture"
+    type: "mixture_gaussian"
+    dimension: 10
+    parameters:
+      n_components: 2
 
 # Perturbation types for alternative hypothesis testing
 perturbations:

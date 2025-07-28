@@ -52,6 +52,10 @@ class MultivariatARDataset(Dataset):
                 # Optional AR parameters
                 - A_matrices: Custom AR coefficient matrices (optional)
                 - noise_cov: Custom noise covariance matrix (optional)
+                - spatial_args: Dict containing spatial grid information (optional):
+                    - 'grid_size': tuple (height, width) defining the 2D spatial grid
+                    - 'conv_filters': list of 2D numpy arrays representing convolutional filters
+                      for each AR lag. Length should equal ar_order.
                 
             split: Which data split to use ('train', 'val', 'test')
             normalise: Whether to normalise the data
@@ -69,13 +73,14 @@ class MultivariatARDataset(Dataset):
         self.noise_scale = config.get('noise_scale', 1.0)
         self.n_series = config.get('n_series', 100)
         
-        self.input_timesteps = config['input_timesteps']  # l
+        self.input_timesteps = config['input_timesteps']
         self.output_timesteps = config['output_timesteps']  # k
         self.split_ratios = config.get('split_ratios', {'train': 0.7, 'val': 0.15, 'test': 0.15})
         
         # Optional parameters
         self.A_matrices = config.get('A_matrices', None)
         self.noise_cov = config.get('noise_cov', None)
+        self.spatial_args = config.get('spatial_args', None)
         
         # Validate configuration
         self._validate_config()
@@ -91,6 +96,9 @@ class MultivariatARDataset(Dataset):
         print(f"  Time series: {self.n_series} series, {self.n_timesteps} timesteps, {self.dimension}D")
         print(f"  Window size: {self.input_timesteps} input → {self.output_timesteps} output")
         print(f"  AR order: {self.ar_order}, Noise scale: {self.noise_scale}")
+        print(f"  Spatial mode: {'Yes' if self.spatial_args else 'No'}")
+        if self.spatial_args:
+            print(f"  Grid size: {self.spatial_args.get('grid_size', 'N/A')}")
         print(f"  Max eigenvalue: {self.generation_metadata['max_eigenvalue']:.4f}")
     
     def _validate_config(self):
@@ -148,6 +156,53 @@ class MultivariatARDataset(Dataset):
                 self.noise_cov = np.array(self.noise_cov)
             if self.noise_cov.shape != (self.dimension, self.dimension):
                 raise ValueError(f"noise_cov must have shape ({self.dimension}, {self.dimension})")
+        
+        # Validate spatial arguments
+        if self.spatial_args is not None:
+            if not isinstance(self.spatial_args, dict):
+                raise ValueError("spatial_args must be a dictionary")
+            
+            # Check required keys
+            required_keys = ['grid_size', 'conv_filters']
+            for key in required_keys:
+                if key not in self.spatial_args:
+                    raise ValueError(f"spatial_args must contain '{key}' key")
+            
+            # Validate grid_size
+            grid_size = self.spatial_args['grid_size']
+            if not isinstance(grid_size, (tuple, list)) or len(grid_size) != 2:
+                raise ValueError("spatial_args['grid_size'] must be a tuple or list of length 2 (height, width)")
+            
+            height, width = grid_size
+            if not isinstance(height, int) or not isinstance(width, int) or height <= 0 or width <= 0:
+                raise ValueError("spatial_args['grid_size'] must contain positive integers")
+            
+            if height * width != self.dimension:
+                raise ValueError(f"spatial_args grid_size ({height} x {width} = {height * width}) must equal dimension ({self.dimension})")
+            
+            # Validate conv_filters
+            conv_filters = self.spatial_args['conv_filters']
+            if not isinstance(conv_filters, (list, tuple)):
+                raise ValueError("spatial_args['conv_filters'] must be a list or tuple of 2D arrays")
+            
+            if len(conv_filters) != self.ar_order:
+                raise ValueError(f"Number of conv_filters ({len(conv_filters)}) must equal ar_order ({self.ar_order})")
+            
+            # Validate each filter
+            for i, filt in enumerate(conv_filters):
+                if isinstance(filt, list):
+                    filt = np.array(filt)
+                    self.spatial_args['conv_filters'][i] = filt  # Update in place
+                if filt.ndim != 2:
+                    raise ValueError(f"spatial_args['conv_filters'][{i}] must be a 2D array")
+                
+                # Ensure filter has odd dimensions for proper centering
+                if filt.shape[0] % 2 == 0 or filt.shape[1] % 2 == 0:
+                    raise ValueError(f"spatial_args['conv_filters'][{i}] must have odd dimensions for proper centering, got shape {filt.shape}")
+        
+        # Validate that spatial_args and A_matrices are not both provided
+        if self.spatial_args is not None and self.A_matrices is not None:
+            raise ValueError("Cannot provide both spatial_args and A_matrices - spatial_args will generate A_matrices automatically")
     
     def _generate_data(self):
         """Generate multivariate AR time series data."""
@@ -161,7 +216,8 @@ class MultivariatARDataset(Dataset):
             noise_cov=self.noise_cov,
             noise_scale=self.noise_scale,
             random_state=self.random_state,
-            n_series=self.n_series
+            n_series=self.n_series,
+            spatial_args=self.spatial_args
         )
         
         # Store generation parameters for reproducibility
@@ -411,5 +467,14 @@ def get_example_config() -> Dict:
         # Optional: custom AR matrices (if not provided, random stable ones are generated)
         # 'A_matrices': None,
         # 'noise_cov': None,
+        
+        # Optional: spatial arguments for 2D grid-based AR generation
+        # 'spatial_args': {
+        #     'grid_size': (5, 1),  # 5x1 grid for dimension=5
+        #     'conv_filters': [
+        #         [[0.0], [0.3], [0.0]],  # AR lag 1: vertical filter
+        #         [[0.0], [0.1], [0.0]]   # AR lag 2: smaller vertical filter
+        #     ]
+        # }
     }
 

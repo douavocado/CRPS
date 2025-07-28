@@ -1,0 +1,123 @@
+data:
+  # Use 9-dimensional data for a 3x3 spatial grid
+  dimension: 4
+  ar_order: 1
+  n_timesteps: 100
+  n_series: 1000
+  noise_scale: 0.2
+  input_timesteps: 1
+  output_timesteps: 1
+  random_state: 123
+  split_ratios:
+    train: 0.8
+    val: 0.1
+    test: 0.1
+  
+  # Spatial arguments for 2D grid-based AR generation
+  spatial_args:
+    grid_size: [2, 2]  # 3x3 spatial grid (total dimension = 9)
+    conv_filters:
+      - [[0.05, -0.1, 0.02],   # Much smaller coefficients for stability
+         [-0.03, 0.15, -0.05],  # Reduced center weight and neighbors
+         [0.04, -0.02, 0.06]]
+
+experiment:
+  name: "spatial_ar_2x2_grid_energy_score_loss_train"
+  save_dir: "results"
+  save_model: true
+  save_results: true
+  log_interval: 10
+  evaluate_test: true
+  # Single seed for demonstration
+  seeds: [42, 123, 456, 789, 999]
+  parallel_seeds: false
+
+loss:
+  training_loss:
+    loss_instances:
+      - name: energy_score_loss
+        loss_function: energy_score_loss
+        coefficient: 1.0
+        spatial_pooling:
+          enabled: false
+        loss_args:
+          norm_dim: true  # IMPORTANT: Normalize by dimension for high-D data
+  
+  evaluation_loss:
+    loss_instances:
+      - name: energy_score_loss
+        loss_function: energy_score_loss
+        coefficient: 1.0
+        spatial_pooling:
+          enabled: false
+        loss_args:
+          norm_dim: true  # IMPORTANT: Normalize by dimension for high-D data
+      - name: energy_score_loss_max
+        loss_function: energy_score_loss
+        coefficient: 1.0
+        spatial_pooling:
+          enabled: true
+          pool_type: max
+          kernel_size: 2
+          spatial_shape: [2, 2]
+        loss_args:
+          norm_dim: true  # IMPORTANT: Normalize by dimension for high-D data
+
+model:
+  type: "mlp_sampler"
+  
+  fgn_encoder:
+    activation_function: "relu"
+    dropout_rate: 0.1
+    hidden_size: 64
+    input_size: null  # Auto-determined
+    latent_dim: 16
+    n_layers: 3
+    non_linear: true
+    output_size: null  # Auto-determined
+    zero_inputs: false
+  
+  mlp_sampler:
+    activation_function: "relu"
+    dropout_rate: 0.1
+    hidden_size: [64, 32]
+    input_size: null  # Auto-determined
+    latent_dim: 8
+    n_layers: 3
+    non_linear: true
+    output_size: null  # Auto-determined
+    sample_layer_index: 1
+    zero_inputs: false
+  
+  affine_normal:
+    output_dim: null  # Auto-determined
+
+training:
+  n_epochs: 60
+  learning_rate: 0.0001  # FURTHER REDUCED: Even lower learning rate for stability
+  batch_size: 32
+  n_samples: 10
+  patience: 8
+  device: "auto"
+  num_workers: 4
+  shuffle_train: true
+  normalise_data: true  # CRITICAL: Enable data normalization for stability
+  grad_clip_norm: 0.5   # REDUCED: Stronger gradient clipping for numerical stability
+  verbose: true
+  
+  optimizer: "adam"
+  optimizer_args:
+    weight_decay: 1e-6
+    betas: [0.9, 0.999]
+    eps: 1e-8
+
+tracking:
+  enabled: true
+  track_every: 5
+  sample_indices: [10, 11, 12, 13, 14]  # Track specific spatial locations
+  n_samples: 500
+  kde_bandwidth: "auto"
+  contour_levels: [0.65, 0.95, 0.99]
+  max_checkpoints: 5
+  generate_plots_after_training: true
+  create_animation: false 

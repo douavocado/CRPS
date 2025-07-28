@@ -1,7 +1,7 @@
 import torch
 import json
 import os
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Union
 from pathlib import Path
 import numpy as np
 
@@ -19,7 +19,7 @@ class ARInferenceTracker:
                  track_every: int = 10,
                  sample_indices: Optional[List[int]] = None,
                  n_samples: int = 100,
-                 kde_bandwidth: float = 0.1,
+                 kde_bandwidth: Union[str, float] = "auto",
                  contour_levels: Optional[List[float]] = None,
                  max_checkpoints: Optional[int] = None,
                  enabled: bool = True):
@@ -31,7 +31,7 @@ class ARInferenceTracker:
             track_every: Save checkpoint every N epochs
             sample_indices: Which dataset samples to track for plotting (if None, will use [0, 1, 2])
             n_samples: Number of samples to use for inference
-            kde_bandwidth: KDE bandwidth for plotting
+            kde_bandwidth: KDE bandwidth for plotting (use "auto" for automatic detection)
             contour_levels: Contour levels for plotting (if None, will use [0.65, 0.95, 0.99])
             max_checkpoints: Maximum number of checkpoints to keep (None = keep all)
             enabled: Whether tracking is enabled
@@ -399,7 +399,7 @@ class ARInferenceTracker:
 def create_tracking_config(track_every: int = 10,
                           sample_indices: Optional[List[int]] = None,
                           n_samples: int = 100,
-                          kde_bandwidth: float = 0.1,
+                          kde_bandwidth: Union[str, float] = "auto",
                           contour_levels: Optional[List[float]] = None,
                           max_checkpoints: Optional[int] = None,
                           enabled: bool = True,
@@ -412,7 +412,7 @@ def create_tracking_config(track_every: int = 10,
         track_every: Save checkpoint every N epochs
         sample_indices: Dataset sample indices to track
         n_samples: Number of samples for inference
-        kde_bandwidth: KDE bandwidth for plotting
+        kde_bandwidth: KDE bandwidth for plotting (use "auto" for automatic detection)
         contour_levels: Contour levels for plotting
         max_checkpoints: Maximum checkpoints to keep
         enabled: Whether tracking is enabled

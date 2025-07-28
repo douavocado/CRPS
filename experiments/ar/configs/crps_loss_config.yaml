@@ -1,16 +1,16 @@
 data:
   A_matrices: 
-    - [[0.6, 0.4],
-       [0.3, 0.7]]
+    - [[0.779, -0.450],    # r=0.9, θ=π/6 (30°)
+       [0.450,  0.779]]
   ar_order: 1
   dimension: 2
   input_timesteps: 1
   n_series: 400
   n_timesteps: 100
-  noise_cov: null
+  noise_cov: [[0.8, 0.3], [0.3, 0.8]]
   noise_scale: 0.15
-  output_timesteps: 3
-  random_state: 789
+  output_timesteps: 1
+  random_state: 789  # Will be overridden by seeds
   split_ratios:
     test: 0.1
     train: 0.8
@@ -18,31 +18,32 @@ data:
 experiment:
   evaluate_test: true
   log_interval: 10
-  name: ar_crps_loss
+  name: ar_crps_loss_multi_seed
   save_dir: results
   save_model: true
   save_results: true
+  # Multi-seed experiment configuration
+  seeds: [42, 123, 456, 789, 999]
+  parallel_seeds: false  # Run seeds sequentially
 loss:
-  coefficients:
-    crps_loss_general: 1.0
-    energy_score_loss: 0.0
-    kernel_score_loss: 0.0
-    mmd_loss: 0.0
-    variogram_score_loss: 0.0
-  loss_function_args:
-    crps_loss_general: {}
-    energy_score_loss:
-      norm_dim: false
-    kernel_score_loss:
-      kernel_type: gaussian
-      sigma: 1.0
-    mmd_loss:
-      kernel_type: gaussian
-      sigma: 1.0
-    variogram_score_loss:
-      p: 1.0
-  losses:
-  - crps_loss_general
+  training_loss:
+    loss_instances:
+      - name: crps_loss_general
+        loss_function: crps_loss_general
+        coefficient: 1.0
+        spatial_pooling:
+          enabled: false
+        loss_args: {}
+  
+  evaluation_loss:
+    loss_instances:
+      - name: crps_loss_general
+        loss_function: crps_loss_general
+        coefficient: 1.0
+        spatial_pooling:
+          enabled: false
+        loss_args: {}
+
 model:
   affine_normal:
     output_dim: null
@@ -62,10 +63,9 @@ model:
     hidden_size:
     - 32
     - 32
-    - 32
     input_size: null
-    latent_dim: 1
-    n_layers: 4
+    latent_dim: 2
+    n_layers: 3
     non_linear: true
     output_size: null
     sample_layer_index: 1
@@ -74,7 +74,7 @@ model:
 training:
   batch_size: 32
   device: auto
-  learning_rate: 0.0001
+  learning_rate: 0.001
   n_epochs: 80
   n_samples: 10
   normalise_data: false
@@ -86,15 +86,17 @@ training:
     - 0.999
     eps: 1.0e-08
     weight_decay: 1e-6
-  patience: 10
+  patience: 5
   shuffle_train: true
   verbose: true
+  # Autoregressive inference settings
+  use_consistent_ar_noise: false  # If true, each sample trajectory uses the same noise pattern throughout all timesteps
 tracking:
   enabled: true
   track_every: 5
-  sample_indices: [23, 24, 25]
+  sample_indices: [42, 43, 44, 45]
   n_samples: 1000
-  kde_bandwidth: 0.1
+  kde_bandwidth: "auto"  # Changed from 0.2 to "auto" for automatic bandwidth detection
   contour_levels: [0.65, 0.95, 0.99]
   max_checkpoints: 10
   generate_plots_after_training: true

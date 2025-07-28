@@ -8,6 +8,7 @@ on multivariate autoregressive time series data with configurable:
 - Model architectures
 - Loss functions 
 - Training hyperparameters
+- Multi-seed experiments
 
 Usage:
     python main.py --config config.yaml
@@ -21,7 +22,7 @@ import yaml
 import json
 import torch
 import shutil
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import numpy as np
 from pathlib import Path
 
@@ -34,7 +35,89 @@ from experiments.data.generate_time_series import generate_multivariate_ar
 from models.fgn_encoder_sampler import FGNEncoderSampler
 from models.mlp_crps_sampler import MLPSampler
 from models.affine_normal import SimpleAffineNormal
-from common.losses import create_loss_function
+from common.losses import create_loss_function, create_multi_instance_loss_function
+
+
+def create_separate_loss_functions(loss_config: Dict[str, Any]) -> tuple:
+    """
+    Create separate training, validation, and testing loss functions based on configuration.
+    
+    Args:
+        loss_config: Loss configuration dictionary
+        
+    Returns:
+        Tuple of (training_loss_fn, validation_loss_fn, testing_loss_fn)
+    """
+    training_loss_config = loss_config.get('training_loss')
+    validation_loss_config = loss_config.get('validation_loss')
+    testing_loss_config = loss_config.get('testing_loss')
+    
+    # Check for required loss configurations
+    if training_loss_config is None:
+        raise ValueError("training_loss must be defined in the loss configuration")
+    
+    if testing_loss_config is None:
+        raise ValueError("testing_loss must be defined in the loss configuration")
+    
+    # Create training and testing loss functions
+    training_loss_fn = create_loss_function_from_config(training_loss_config)
+    testing_loss_fn = create_loss_function_from_config(testing_loss_config)
+    
+    # Create validation loss function (defaults to training loss if not specified)
+    if validation_loss_config is not None:
+        validation_loss_fn = create_loss_function_from_config(validation_loss_config)
+    else:
+        validation_loss_fn = training_loss_fn
+        print("validation_loss not specified, using training_loss for validation")
+    
+    return training_loss_fn, validation_loss_fn, testing_loss_fn
+
+
+def create_loss_function_from_config(config: Dict[str, Any]):
+    """
+    Create a loss function from a configuration, supporting both old and new formats.
+    
+    Args:
+        config: Loss configuration dictionary
+        
+    Returns:
+        Loss function
+    """
+    # Support new multi-instance format
+    if 'loss_instances' in config:
+        return create_multi_instance_loss_function(config)
+    # Support old format
+    else:
+        return create_loss_function(config)
+
+
+def get_loss_info(loss_config: Dict[str, Any]) -> str:
+    """
+    Get a human-readable description of a loss configuration.
+    
+    Args:
+        loss_config: Loss configuration dictionary
+        
+    Returns:
+        String description of the loss configuration
+    """
+    if 'loss_instances' in loss_config:
+        instances = loss_config['loss_instances']
+        descriptions = []
+        for instance in instances:
+            name = instance.get('name', 'unnamed')
+            loss_fn = instance.get('loss_function', 'unknown')
+            coeff = instance.get('coefficient', 1.0)
+            descriptions.append(f"{name}({loss_fn}, coeff={coeff})")
+        return f"Multi-instance: {', '.join(descriptions)}"
+    else:
+        losses = loss_config.get('losses', [])
+        coefficients = loss_config.get('coefficients', {})
+        descriptions = []
+        for loss in losses:
+            coeff = coefficients.get(loss, 1.0)
+            descriptions.append(f"{loss}(coeff={coeff})")
+        return f"Combined: {', '.join(descriptions)}"
 
 
 def get_default_config() -> Dict[str, Any]:
@@ -101,6 +184,32 @@ def get_default_config() -> Dict[str, Any]:
         },
         
         'loss': {
+            # New format: Separate training, validation, and testing losses (required)
+            'training_loss': {
+                'loss_instances': [
+                    {
+                        'name': 'crps_training',
+                        'loss_function': 'crps_loss_general',
+                        'coefficient': 1.0,
+                        'spatial_pooling': {'enabled': False},
+                        'loss_args': {}
+                    }
+                ]
+            },
+            'validation_loss': None,  # If None, defaults to training_loss
+            'testing_loss': {
+                'loss_instances': [
+                    {
+                        'name': 'crps_testing',
+                        'loss_function': 'crps_loss_general',
+                        'coefficient': 1.0,
+                        'spatial_pooling': {'enabled': False},
+                        'loss_args': {}
+                    }
+                ]
+            },
+            
+            # Legacy format (deprecated - use for backward compatibility only)
             'losses': ['crps_loss_general'],  # Can include multiple losses
             'loss_function_args': {
                 'crps_loss_general': {},
@@ -145,7 +254,10 @@ def get_default_config() -> Dict[str, Any]:
             'save_model': True,
             'save_results': True,
             'log_interval': 10,  # Log every N epochs
-            'evaluate_test': True
+            'evaluate_test': True,
+            # Multi-seed experiment configuration
+            'seeds': [42],  # List of seeds for multi-seed experiments
+            'parallel_seeds': False  # If True, run seeds in parallel (experimental)
         },
         
         'tracking': {
@@ -153,7 +265,7 @@ def get_default_config() -> Dict[str, Any]:
             'track_every': 10,
             'sample_indices': [0, 1, 2],
             'n_samples': 100,
-            'kde_bandwidth': 0.1,
+            'kde_bandwidth': "auto",  # Default to automatic bandwidth detection
             'contour_levels': [0.65, 0.95, 0.99],
             'max_checkpoints': 10,
             'generate_plots_after_training': True,
@@ -238,35 +350,184 @@ def setup_device(device_config: str) -> str:
         return device_config
 
 
-def train_model(config: Dict[str, Any]) -> Dict[str, Any]:
+def run_multi_seed_experiments(config: Dict[str, Any]) -> Dict[str, Any]:
     """
-    Main training function that orchestrates the entire training process.
+    Run experiments with multiple seeds, saving results in seed-specific subfolders.
     
     Args:
         config: Complete configuration dictionary
+        
+    Returns:
+        Dictionary containing results from all seed experiments
+    """
+    exp_config = config['experiment']
+    seeds = exp_config.get('seeds', [42])
+    
+    # If only one seed, run single experiment
+    if len(seeds) == 1:
+        config_copy = config.copy()
+        config_copy['data']['random_state'] = seeds[0]
+        return train_single_seed_model(config_copy, seed=seeds[0])
+    
+    # Multi-seed experiment setup
+    base_save_dir = Path(exp_config['save_dir']) / exp_config['name']
+    
+    # Remove existing experiment directory if it exists
+    if base_save_dir.exists():
+        print(f"Removing existing experiment directory: {base_save_dir}")
+        shutil.rmtree(base_save_dir)
+    
+    # Create base experiment directory
+    base_save_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Save base configuration
+    with open(base_save_dir / 'base_config.yaml', 'w') as f:
+        yaml.dump(config, f, default_flow_style=False)
+    
+    print(f"=== Multi-Seed AR Time Series Training Experiment ===")
+    print(f"Experiment: {exp_config['name']}")
+    print(f"Seeds: {seeds}")
+    print(f"Base directory: {base_save_dir}")
+    
+    # Run experiments for each seed
+    all_results = {}
+    aggregated_results = {
+        'best_val_losses': [],
+        'test_losses': [],
+        'training_histories': {},
+        'seed_results': {}
+    }
+    
+    for i, seed in enumerate(seeds):
+        print(f"\n{'='*60}")
+        print(f"Running experiment {i+1}/{len(seeds)} with seed {seed}")
+        print(f"{'='*60}")
+        
+        # Create seed-specific configuration
+        config_copy = config.copy()
+        config_copy['data']['random_state'] = seed
+        
+        # Update experiment config for this seed
+        config_copy['experiment']['name'] = f"{exp_config['name']}/seed_{seed}"
+        
+        # Run training for this seed
+        try:
+            seed_results = train_single_seed_model(config_copy, seed=seed, parent_dir=base_save_dir)
+            all_results[f'seed_{seed}'] = seed_results
+            
+            # Aggregate results
+            aggregated_results['best_val_losses'].append(seed_results['training_results']['best_val_loss'])
+            aggregated_results['seed_results'][f'seed_{seed}'] = seed_results
+            
+            if seed_results['test_results'] and 'test_loss' in seed_results['test_results']:
+                aggregated_results['test_losses'].append(seed_results['test_results']['test_loss'])
+            
+            # Store training history
+            aggregated_results['training_histories'][f'seed_{seed}'] = seed_results['training_results']['history']
+            
+        except Exception as e:
+            print(f"Error in seed {seed} experiment: {e}")
+            import traceback
+            traceback.print_exc()
+            all_results[f'seed_{seed}'] = {'error': str(e)}
+    
+    # Compute aggregated statistics
+    if aggregated_results['best_val_losses']:
+        val_losses = np.array(aggregated_results['best_val_losses'])
+        aggregated_results['val_loss_stats'] = {
+            'mean': float(np.mean(val_losses)),
+            'std': float(np.std(val_losses)),
+            'min': float(np.min(val_losses)),
+            'max': float(np.max(val_losses)),
+            'median': float(np.median(val_losses))
+        }
+        
+        print(f"\n=== Validation Loss Statistics Across Seeds ===")
+        print(f"Mean: {aggregated_results['val_loss_stats']['mean']:.6f} ± {aggregated_results['val_loss_stats']['std']:.6f}")
+        print(f"Min: {aggregated_results['val_loss_stats']['min']:.6f}")
+        print(f"Max: {aggregated_results['val_loss_stats']['max']:.6f}")
+        print(f"Median: {aggregated_results['val_loss_stats']['median']:.6f}")
+    
+    if aggregated_results['test_losses']:
+        test_losses = np.array(aggregated_results['test_losses'])
+        aggregated_results['test_loss_stats'] = {
+            'mean': float(np.mean(test_losses)),
+            'std': float(np.std(test_losses)),
+            'min': float(np.min(test_losses)),
+            'max': float(np.max(test_losses)),
+            'median': float(np.median(test_losses))
+        }
+        
+        print(f"\n=== Test Loss Statistics Across Seeds ===")
+        print(f"Mean: {aggregated_results['test_loss_stats']['mean']:.6f} ± {aggregated_results['test_loss_stats']['std']:.6f}")
+        print(f"Min: {aggregated_results['test_loss_stats']['min']:.6f}")
+        print(f"Max: {aggregated_results['test_loss_stats']['max']:.6f}")
+        print(f"Median: {aggregated_results['test_loss_stats']['median']:.6f}")
+    
+    # Save aggregated results
+    aggregated_results['config'] = config
+    aggregated_results['seeds'] = seeds
+    aggregated_results['n_seeds'] = len(seeds)
+    
+    results_path = base_save_dir / 'aggregated_results.json'
+    with open(results_path, 'w') as f:
+        json.dump(aggregated_results, f, indent=2, default=str)
+    print(f"\nAggregated results saved to: {results_path}")
+    
+    return {
+        'all_results': all_results,
+        'aggregated_results': aggregated_results,
+        'base_save_dir': base_save_dir,
+        'config': config
+    }
+
+
+def train_single_seed_model(config: Dict[str, Any], seed: int, parent_dir: Optional[Path] = None) -> Dict[str, Any]:
+    """
+    Train a model for a single seed.
+    
+    Args:
+        config: Complete configuration dictionary
+        seed: Random seed for this experiment
+        parent_dir: Parent directory for saving results (optional)
         
     Returns:
         Dictionary containing training results and metadata
     """
     # Setup experiment directory
     exp_config = config['experiment']
-    save_dir = Path(exp_config['save_dir']) / exp_config['name']
     
-    # Remove existing experiment directory if it exists
-    if save_dir.exists():
-        print(f"Removing existing experiment directory: {save_dir}")
-        shutil.rmtree(save_dir)
+    if parent_dir is not None:
+        # Use seed-specific subdirectory under parent
+        save_dir = parent_dir / f"seed_{seed}"
+    else:
+        # Use standard directory structure
+        save_dir = Path(exp_config['save_dir']) / exp_config['name']
+        # Remove existing experiment directory if it exists
+        if save_dir.exists():
+            print(f"Removing existing experiment directory: {save_dir}")
+            shutil.rmtree(save_dir)
     
     # Create fresh experiment directory
     save_dir.mkdir(parents=True, exist_ok=True)
     
-    # Save configuration
+    # Save configuration with seed information
+    config_to_save = config.copy()
+    config_to_save['experiment']['actual_seed'] = seed
     with open(save_dir / 'config.yaml', 'w') as f:
-        yaml.dump(config, f, default_flow_style=False)
+        yaml.dump(config_to_save, f, default_flow_style=False)
     
-    print(f"=== AR Time Series Training Experiment ===")
+    print(f"=== AR Time Series Training (Seed {seed}) ===")
     print(f"Experiment: {exp_config['name']}")
     print(f"Save directory: {save_dir}")
+    print(f"Random seed: {seed}")
+    
+    # Set PyTorch random seed for reproducibility
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed(seed)
+        torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
     
     # Setup device
     device = setup_device(config['training']['device'])
@@ -312,11 +573,21 @@ def train_model(config: Dict[str, Any]) -> Dict[str, Any]:
     print(f"Model type: {config['model']['type']}")
     print(f"Model parameters: {sum(p.numel() for p in model.parameters() if p.requires_grad):,}")
     
-    # Create loss function
-    print("\n=== Creating Loss Function ===")
-    loss_fn = create_loss_function(config['loss'])
-    print(f"Loss functions: {config['loss']['losses']}")
-    print(f"Loss coefficients: {config['loss']['coefficients']}")
+    # Create loss functions
+    print("\n=== Creating Loss Functions ===")
+    training_loss_fn, validation_loss_fn, testing_loss_fn = create_separate_loss_functions(config['loss'])
+    
+    # Print loss information
+    print("Using separate training, validation, and testing losses:")
+    print(f"Training loss: {get_loss_info(config['loss']['training_loss'])}")
+    
+    # Handle validation loss (may be None, defaulting to training loss)
+    if config['loss']['validation_loss'] is not None:
+        print(f"Validation loss: {get_loss_info(config['loss']['validation_loss'])}")
+    else:
+        print("Validation loss: Same as training loss (validation_loss not specified)")
+    
+    print(f"Testing loss: {get_loss_info(config['loss']['testing_loss'])}")
     
     # Train model
     print("\n=== Training Model ===")
@@ -324,7 +595,9 @@ def train_model(config: Dict[str, Any]) -> Dict[str, Any]:
         model=model,
         train_loader=train_loader,
         val_loader=val_loader,
-        loss_fn=loss_fn,
+        training_loss_fn=training_loss_fn,
+        validation_loss_fn=validation_loss_fn,
+        testing_loss_fn=testing_loss_fn,
         n_epochs=training_config['n_epochs'],
         learning_rate=training_config['learning_rate'],
         n_samples=training_config['n_samples'],
@@ -333,7 +606,8 @@ def train_model(config: Dict[str, Any]) -> Dict[str, Any]:
         verbose=training_config['verbose'],
         tracking_config=config.get('tracking', {}),
         save_dir=str(save_dir),
-        model_config=config['model']
+        model_config=config['model'],
+        training_config=training_config
     )
     
     print(f"\nTraining completed!")
@@ -353,16 +627,39 @@ def train_model(config: Dict[str, Any]) -> Dict[str, Any]:
             random_state=data_config.get('random_state')
         )
         
-        test_loss = evaluate_ar_model(
-            model=training_results['model'],
-            data_loader=test_loader,
-            loss_fn=loss_fn,
-            n_samples=training_config['n_samples'],
-            device=device
-        )
+        # Check if we should show test breakdown
+        show_test_breakdown = hasattr(testing_loss_fn, '_is_multi_instance') and testing_loss_fn._is_multi_instance
         
-        test_results = {'test_loss': test_loss}
-        print(f"Test loss: {test_loss:.6f}")
+        if show_test_breakdown:
+            test_loss, test_breakdown = evaluate_ar_model(
+                model=training_results['model'],
+                data_loader=test_loader,
+                loss_fn=testing_loss_fn,
+                n_samples=training_config['n_samples'],
+                device=device,
+                return_breakdown=True
+            )
+            
+            test_results = {
+                'test_loss': test_loss,
+                'test_breakdown': test_breakdown
+            }
+            print(f"Test loss: {test_loss:.6f}")
+            print("Test breakdown:")
+            for component, value in test_breakdown.items():
+                print(f"  {component}: {value:.6f}")
+        else:
+            test_loss = evaluate_ar_model(
+                model=training_results['model'],
+                data_loader=test_loader,
+                loss_fn=testing_loss_fn,
+                n_samples=training_config['n_samples'],
+                device=device
+            )
+            
+            test_results = {'test_loss': test_loss}
+            print(f"Test loss: {test_loss:.6f}")
+        
         print(f"Test samples: {len(test_loader.dataset)}")
     
     # Save results
@@ -382,7 +679,15 @@ def train_model(config: Dict[str, Any]) -> Dict[str, Any]:
                 'parameters': sum(p.numel() for p in model.parameters()),
                 'trainable_parameters': sum(p.numel() for p in model.parameters() if p.requires_grad)
             },
-            'tracking': training_results.get('tracking', {})
+            'tracking': training_results.get('tracking', {}),
+            'loss_breakdown_info': {
+                'has_training_breakdown': hasattr(training_loss_fn, '_is_multi_instance') and training_loss_fn._is_multi_instance,
+                'has_validation_breakdown': hasattr(validation_loss_fn, '_is_multi_instance') and validation_loss_fn._is_multi_instance,
+                'has_testing_breakdown': hasattr(testing_loss_fn, '_is_multi_instance') and testing_loss_fn._is_multi_instance,
+                'training_loss_instances': getattr(training_loss_fn, '_loss_instances', None),
+                'validation_loss_instances': getattr(validation_loss_fn, '_loss_instances', None),
+                'testing_loss_instances': getattr(testing_loss_fn, '_loss_instances', None)
+            }
         }
         
         results_path = save_dir / 'results.json'
@@ -520,11 +825,14 @@ Examples:
         # Load configuration
         config = load_config(args.config, args.config_dict)
         
-        # Run training
-        results = train_model(config)
+        # Run training (multi-seed or single-seed)
+        results = run_multi_seed_experiments(config)
         
         print(f"\n=== Experiment Complete ===")
-        print(f"Results saved to: {results['save_dir']}")
+        if 'base_save_dir' in results:
+            print(f"Results saved to: {results['base_save_dir']}")
+        else:
+            print(f"Results saved to: {results['save_dir']}")
         
         return results
         

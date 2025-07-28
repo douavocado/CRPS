@@ -1,0 +1,120 @@
+# Multi-Instance Loss Example Configuration
+# This shows how to use multiple instances of the same loss function
+# with different spatial pooling configurations
+
+data:
+  A_matrices: 
+    - [[0.6, 0.4],
+       [0.3, 0.7]]
+  ar_order: 1
+  dimension: 64  # 8x8 spatial grid
+  input_timesteps: 1
+  n_series: 300
+  n_timesteps: 100
+  noise_cov: null
+  noise_scale: 0.15
+  output_timesteps: 2
+  random_state: 789
+  split_ratios:
+    test: 0.1
+    train: 0.8
+    val: 0.1
+
+experiment:
+  evaluate_test: true
+  log_interval: 10
+  name: ar_multi_instance_loss_demo
+  save_dir: results
+  save_model: true
+  save_results: true
+  seeds: [42, 123]
+  parallel_seeds: false
+
+# NEW FORMAT: Multi-instance loss configuration
+loss:
+  loss_instances:
+    # Fine-scale energy loss with 2x2 pooling
+    - name: energy_fine
+      loss_function: energy_score_loss
+      coefficient: 1.0
+      spatial_pooling:
+        enabled: true
+        pool_type: mean
+        kernel_size: 2
+        spatial_shape: [8, 8]
+      loss_args:
+        norm_dim: true
+    
+    # Coarse-scale energy loss with 4x4 pooling  
+    - name: energy_coarse
+      loss_function: energy_score_loss
+      coefficient: 0.5
+      spatial_pooling:
+        enabled: true
+        pool_type: max
+        kernel_size: 4
+        spatial_shape: [8, 8]
+      loss_args:
+        norm_dim: true
+    
+    # CRPS loss at medium scale with 2x2 pooling
+    - name: crps_medium
+      loss_function: crps_loss_general
+      coefficient: 0.3
+      spatial_pooling:
+        enabled: true
+        pool_type: mean
+        kernel_size: 2
+        spatial_shape: [8, 8]
+    
+    # Variogram loss for spatial structure at coarse scale
+    - name: variogram_spatial
+      loss_function: variogram_score_loss
+      coefficient: 0.2
+      spatial_pooling:
+        enabled: true
+        pool_type: median
+        kernel_size: 8
+        spatial_shape: [8, 8]
+      loss_args:
+        p: 2.0
+
+model:
+  type: mlp_sampler
+  mlp_sampler:
+    activation_function: relu
+    dropout_rate: 0.1
+    hidden_size: [64, 64, 32]
+    latent_dim: 8
+    n_layers: 3
+    non_linear: true
+    sample_layer_index: 1
+    zero_inputs: false
+
+training:
+  batch_size: 16
+  device: auto
+  learning_rate: 0.001
+  n_epochs: 50
+  n_samples: 12
+  normalise_data: false
+  num_workers: 4
+  optimizer: adam
+  optimizer_args:
+    betas: [0.9, 0.999]
+    eps: 1.0e-08
+    weight_decay: 1e-6
+  patience: 8
+  shuffle_train: true
+  verbose: true
+
+tracking:
+  enabled: true
+  track_every: 5
+  sample_indices: [10, 11, 12]
+  n_samples: 500
+  kde_bandwidth: auto
+  contour_levels: [0.65, 0.95, 0.99]
+  max_checkpoints: 5
+  generate_plots_after_training: true
+  create_animation: false 

@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torchnaut.crps import EpsilonSampler, crps_loss, crps_loss_mv
 from torchnaut import crps
+import warnings
 
 from common.losses import crps_loss_general
 
@@ -70,17 +71,18 @@ class MLPSampler(nn.Module):
         self.output_size = output_size
         self.non_linear = non_linear
         
-        # Create layers
-        layers = []
+        # Create layers - split into pre-sampler, sampler, and post-sampler
+        pre_sampler_layers = []
+        post_sampler_layers = []
         hidden_layer_idx = 0
         
         if not self.zero_inputs: # need to map input dimension to hidden size
             # First layer from input_size to first hidden size
-            layers.append(nn.Linear(input_size, self.hidden_sizes[hidden_layer_idx]))
+            pre_sampler_layers.append(nn.Linear(input_size, self.hidden_sizes[hidden_layer_idx]))
             if self.non_linear:
-                layers.append(self.activation_fn)
+                pre_sampler_layers.append(self.activation_fn)
             if dropout_rate > 0:
-                layers.append(nn.Dropout(dropout_rate))
+                pre_sampler_layers.append(nn.Dropout(dropout_rate))
             hidden_layer_idx += 1
         
         # Adding layers before randomisation layer (sample_layer_index - 1 additional hidden layers)
@@ -89,15 +91,15 @@ class MLPSampler(nn.Module):
                 break
             prev_size = self.hidden_sizes[hidden_layer_idx - 1]
             curr_size = self.hidden_sizes[hidden_layer_idx]
-            layers.append(nn.Linear(prev_size, curr_size))
+            pre_sampler_layers.append(nn.Linear(prev_size, curr_size))
             if self.non_linear:
-                layers.append(self.activation_fn)
+                pre_sampler_layers.append(self.activation_fn)
             if dropout_rate > 0:
-                layers.append(nn.Dropout(dropout_rate))
+                pre_sampler_layers.append(nn.Dropout(dropout_rate))
             hidden_layer_idx += 1
         
-        # add randomisation early on for non-linear modelling of noise
-        layers.append(EpsilonSampler(latent_dim))
+        # Store the epsilon sampler separately
+        self.epsilon_sampler = EpsilonSampler(latent_dim)
         
         # Determine input size for layer after EpsilonSampler
         if hidden_layer_idx > 0:
@@ -111,33 +113,35 @@ class MLPSampler(nn.Module):
         
         if remaining_layers == 0:
             # Go straight to output layer
-            layers.append(nn.Linear(prev_size, output_size))
+            post_sampler_layers.append(nn.Linear(prev_size, output_size))
             if self.non_linear:
-                layers.append(self.activation_fn)
+                post_sampler_layers.append(self.activation_fn)
         else:
             # Add remaining hidden layers
             for i in range(remaining_layers):
                 curr_size = self.hidden_sizes[hidden_layer_idx + i]
-                layers.append(nn.Linear(prev_size, curr_size))
+                post_sampler_layers.append(nn.Linear(prev_size, curr_size))
                 if self.non_linear and i < remaining_layers - 1: # don't add non-linearity to the last layer
-                    layers.append(self.activation_fn)
+                    post_sampler_layers.append(self.activation_fn)
                 if dropout_rate > 0:
-                    layers.append(nn.Dropout(dropout_rate))
+                    post_sampler_layers.append(nn.Dropout(dropout_rate))
                 prev_size = curr_size
             
             # Add output layer
-            layers.append(nn.Linear(prev_size, output_size))
+            post_sampler_layers.append(nn.Linear(prev_size, output_size))
         
-        # Final layer that outputs features to be combined with random samples
-        self.feature_extractor = nn.Sequential(*layers)
+        # Create the separated layer sequences
+        self.pre_sampler = nn.Sequential(*pre_sampler_layers) if pre_sampler_layers else nn.Identity()
+        self.post_sampler = nn.Sequential(*post_sampler_layers) if post_sampler_layers else nn.Identity()
         
-    def forward(self, x, n_samples=None):
+    def forward(self, x, n_samples=None, random_seed=None):
         """
         Forward pass through the network. If zero_inputs is True we directly feed self.input_vector to the feature extractor.
         
         Args:
             x: Input tensor of shape [batch_size, input_size] (single timestep only)
-            n_samples: Number of samples to generate (optional)
+            n_samples: Number of samples to generate (optional, defaults to 1)
+            random_seed: Random seed for deterministic sampling. Only used when n_samples=1.
             
         Returns:
             samples: Predicted samples of shape [batch_size, n_samples, output_size]
@@ -149,32 +153,65 @@ class MLPSampler(nn.Module):
                            f"If you have time series data [batch_size, timesteps, dims], "
                            f"this model is not suitable for multi-timestep inputs.")
         
-        # Extract features
-        with crps.EpsilonSampler.n_samples(n_samples): # Override the default number of n_samples.
-            if self.zero_inputs:
-                # Project input_vector to match batch size
-                batch_size = x.shape[0]
-                batch_input_vector = self.input_vector.expand(batch_size, -1)
-                predictions = self.feature_extractor(batch_input_vector)
-            else:
-                predictions = self.feature_extractor(x)
+        batch_size = x.shape[0]
+        
+        # Set default n_samples
+        if n_samples is None:
+            n_samples = 1
+        
+        # Validate random_seed usage
+        if random_seed is not None and n_samples != 1:
+            raise ValueError(f"random_seed can only be used when n_samples=1, but got n_samples={n_samples}")
+        
+        # Prepare input for pre-sampler layers
+        if self.zero_inputs:
+            # Project input_vector to match batch size
+            input_features = self.input_vector.expand(batch_size, -1)
+        else:
+            input_features = x
+        
+        # Pass through pre-sampler layers
+        pre_sampler_output = self.pre_sampler(input_features)
+        
+        # Generate noise with optional deterministic seeding
+        if random_seed is not None:
+            # Save current random state
+            current_state = torch.get_rng_state()
+            # Set deterministic seed
+            torch.manual_seed(random_seed)
+        
+        # Generate noise
+        with crps.EpsilonSampler.n_samples(n_samples):
+            noise = self.epsilon_sampler(pre_sampler_output)
+        
+        # Restore random state if we used a seed
+        if random_seed is not None:
+            torch.set_rng_state(current_state)
+        
+        # The EpsilonSampler already concatenates input features with noise
+        # So 'noise' is actually [batch_size, n_samples, features + latent_dim]
+        combined_features = noise
+        
+        # Pass through post-sampler layers
+        predictions = self.post_sampler(combined_features)
         
         return predictions # shape [batch_size, n_samples, output_size]
     
-    def crps_loss(self, x, y, n_samples=None):
+    def crps_loss(self, x, y, n_samples=None, random_seed=None):
         """
         Compute CRPS loss using the torchnaut implementation. If the output_size is greater than 1, the loss is computed for each output dimension and then averaged.
         
         Args:
             x: Input tensor of shape [batch_size, input_size]
             y: Target tensor of shape [batch_size, output_size]
-            n_samples: Number of samples to generate (optional)
+            n_samples: Number of samples to generate (optional, defaults to 1)
+            random_seed: Random seed for deterministic sampling. Only used when n_samples=1.
             
         Returns:
             loss: Scalar CRPS loss (mean across batch, and across output_size)
         """
         # Generate samples
-        samples = self.forward(x, n_samples=n_samples) # shape [batch_size, n_samples, output_size]
+        samples = self.forward(x, n_samples=n_samples, random_seed=random_seed) # shape [batch_size, n_samples, output_size]
         
         # Compute CRPS loss using torchnaut        
         # Get per-sample losses, if output_size > 1, the loss is computed for each output dimension and then averaged
@@ -186,19 +223,20 @@ class MLPSampler(nn.Module):
         # Return mean loss (scalar)
         return per_sample_loss.mean()
     
-    def energy_score_loss(self, x, y, n_samples=None):
+    def energy_score_loss(self, x, y, n_samples=None, random_seed=None):
         """
         Compute energy score loss using the torchnaut implementation.
 
         Args:
             x: Input tensor of shape [batch_size, input_size]
             y: Target tensor of shape [batch_size, output_size]
-            n_samples: Number of samples to generate (optional)
+            n_samples: Number of samples to generate (optional, defaults to 1)
+            random_seed: Random seed for deterministic sampling. Only used when n_samples=1.
             
         Returns:
             loss: Scalar energy score loss (mean across batch, and across output_size)
         """
-        samples = self.forward(x, n_samples=n_samples) # shape [batch_size, n_samples, output_size]
+        samples = self.forward(x, n_samples=n_samples, random_seed=random_seed) # shape [batch_size, n_samples, output_size]
         
         # Compute energy score loss using torchnaut
         if self.output_size > 1:

@@ -25,13 +25,19 @@ This runs training with default parameters (FGN Encoder model, CRPS loss, 3D AR(
 
 ```bash
 # Train FGN Encoder model
-python main.py --config example_configs/fgn_encoder_config.yaml
+python main.py --config configs/general_config.yaml
 
-# Train with combined loss functions
-python main.py --config example_configs/combined_loss_config.yaml
+# Train with CRPS loss
+python main.py --config configs/crps_loss_config.yaml
 
-# Train baseline Affine Normal model
-python main.py --config example_configs/affine_normal_config.yaml
+# Train with Energy Score loss
+python main.py --config configs/energy_loss_config.yaml
+
+# Train spatial AR(1) on 3x3 grid
+python main.py --config configs/spatial_ar_config.yaml
+
+# Train spatial AR(2) on 4x4 grid with multiple filters
+python main.py --config configs/spatial_ar2_config.yaml
 ```
 
 ### 3. Command-Line Configuration Override
@@ -48,6 +54,19 @@ python main.py --config-dict '{"loss": {"losses": ["energy_score_loss"]}}'
 
 ```bash
 python main.py --save-example-config my_config.yaml
+```
+
+### 5. Multi-Seed Experiments
+
+```bash
+# Test multi-seed functionality with 3 seeds
+python main.py --config configs/multi_seed_test.yaml
+
+# Run CRPS loss comparison with 5 seeds
+python main.py --config configs/crps_loss_config.yaml
+
+# Quick multi-seed test via command line
+python main.py --config-dict '{"experiment": {"seeds": [1, 2, 3]}, "training": {"n_epochs": 10}}'
 ```
 
 ## Configuration Structure
@@ -182,7 +201,35 @@ experiment:
   save_results: true
   log_interval: 10
   evaluate_test: true
+  # Multi-seed experiment configuration
+  seeds: [42, 123, 456, 789, 999]  # List of random seeds to run
+  parallel_seeds: false  # Whether to run seeds in parallel (experimental)
 ```
+
+#### Multi-Seed Experiments
+
+The framework supports running multiple experiments with different random seeds to assess model performance variability:
+
+- **Single Seed**: If `seeds` contains only one value, runs a single experiment
+- **Multi-Seed**: If `seeds` contains multiple values, runs separate experiments for each seed
+- **Results Structure**: 
+  - Each seed creates a subdirectory: `results/experiment_name/seed_42/`, `results/experiment_name/seed_123/`, etc.
+  - Aggregated statistics are saved in `results/experiment_name/aggregated_results.json`
+  - Individual seed configurations and results are saved in each seed subdirectory
+
+**Example Multi-Seed Usage**:
+```bash
+# Run with 5 different seeds
+python main.py --config configs/multi_seed_test.yaml
+
+# Override seeds via command line
+python main.py --config-dict '{"experiment": {"seeds": [1, 2, 3, 4, 5]}}'
+```
+
+**Aggregated Results Include**:
+- Validation and test loss statistics (mean, std, min, max, median)
+- Individual training histories for each seed
+- Complete results from each seed experiment
 
 ## Available Models
 
@@ -253,6 +300,88 @@ loss:
     variogram_score_loss: 0.3
 ```
 
+### Separate Training and Evaluation Losses (NEW)
+
+You can now use different loss functions for training and evaluation, which allows you to optimise training convergence while maintaining rigorous evaluation standards:
+
+#### Basic Example: Different Loss Functions
+
+```yaml
+loss:
+  # Training loss: Use energy score for better gradients
+  training_loss:
+    loss_instances:
+      - name: energy_training
+        loss_function: energy_score_loss
+        coefficient: 1.0
+        loss_args:
+          norm_dim: true
+  
+  # Evaluation loss: Use CRPS for precise assessment
+  evaluation_loss:
+    loss_instances:
+      - name: crps_evaluation
+        loss_function: crps_loss_general
+        coefficient: 1.0
+        loss_args: {}
+```
+
+#### Advanced Example: Multiple Loss Combinations
+
+```yaml
+loss:
+  # Training: Focus on convergence
+  training_loss:
+    loss_instances:
+      - name: energy_primary
+        loss_function: energy_score_loss
+        coefficient: 1.0
+        loss_args:
+          norm_dim: true
+      - name: variogram_secondary
+        loss_function: variogram_score_loss
+        coefficient: 0.3
+        loss_args:
+          p: 1.5
+  
+  # Evaluation: Comprehensive assessment
+  evaluation_loss:
+    loss_instances:
+      - name: crps_primary
+        loss_function: crps_loss_general
+        coefficient: 1.0
+      - name: energy_secondary
+        loss_function: energy_score_loss
+        coefficient: 0.5
+        loss_args:
+          norm_dim: false
+      - name: kernel_tertiary
+        loss_function: kernel_score_loss
+        coefficient: 0.3
+        loss_args:
+          kernel_type: gaussian
+          sigma: 1.0
+```
+
+#### Running Separate Loss Experiments
+
+```bash
+# Basic separate losses
+python main.py --config configs/separate_losses_example.yaml
+
+# Advanced separate losses
+python main.py --config configs/advanced_separate_losses_example.yaml
+```
+
+#### Benefits of Separate Losses
+
+1. **Training Optimisation**: Use loss functions with better gradient properties (e.g., energy score) for faster convergence
+2. **Evaluation Precision**: Use established benchmarks (e.g., CRPS) for accurate model assessment
+3. **Research Flexibility**: Compare different loss combinations without retraining
+4. **Multi-Scale Assessment**: Use different spatial pooling for training vs. evaluation
+
+**Note**: The framework maintains full backward compatibility - existing configurations will continue to work unchanged.
+
 ## Output Structure
 
 Training produces the following outputs in the specified `save_dir`:
@@ -308,6 +437,56 @@ data:
   noise_cov: [[1.0, 0.5], [0.5, 1.0]]  # 2x2 covariance matrix
 ```
 
+### Spatial AR Processes (NEW)
+
+Generate AR processes on 2D spatial grids using convolutional filters:
+
+```yaml
+data:
+  dimension: 9  # Must equal grid_size height * width
+  ar_order: 1
+  spatial_args:
+    grid_size: [3, 3]  # 3x3 spatial grid
+    conv_filters:
+      - [[0.1, 0.2, 0.1],    # AR lag 1: smoothing filter
+         [0.2, 0.4, 0.2],    # Strong center influence
+         [0.1, 0.2, 0.1]]
+```
+
+For AR(2) with multiple spatial patterns:
+
+```yaml
+data:
+  dimension: 16  # 4x4 grid
+  ar_order: 2
+  spatial_args:
+    grid_size: [4, 4]
+    conv_filters:
+      # AR lag 1: Cross pattern (vertical/horizontal coupling)
+      - [[0.0, 0.1, 0.0],
+         [0.1, 0.3, 0.1],
+         [0.0, 0.1, 0.0]]
+      
+      # AR lag 2: Diagonal pattern
+      - [[0.05, 0.0, 0.05],
+         [0.0,  0.1, 0.0],
+         [0.05, 0.0, 0.05]]
+```
+
+**Spatial AR Features:**
+- Treats multivariate data as 2D spatial grids
+- Each location depends on neighbors via convolutional filters
+- Maintains dimensionality with zero-padding at edges
+- Supports any AR order with corresponding filter patterns
+- Automatically generates AR coefficient matrices from spatial filters
+- Cannot be combined with custom `A_matrices` (spatial filters generate them)
+
+**Spatial AR Requirements:**
+- `dimension` must equal `grid_size[0] * grid_size[1]`
+- `conv_filters` list length must equal `ar_order`
+- All filters must have odd dimensions for proper centering
+- Filters can be any 2D numpy-compatible array
+
 ### Zero-Input Models
 
 Train models that ignore input (useful for unconditional generation):
@@ -327,6 +506,45 @@ model:
   fgn_encoder:
     activation_function: gelu
 ```
+
+### Tracking and Visualisation
+
+The framework includes a powerful tracking system that saves model checkpoints during training and generates AR inference visualisation plots:
+
+```yaml
+tracking:
+  enabled: true                    # Enable/disable tracking
+  track_every: 10                  # Save checkpoint every N epochs
+  sample_indices: [0, 1, 2]       # Which dataset samples to visualise
+  n_samples: 100                   # Number of samples for inference plots
+  kde_bandwidth: "auto"            # KDE bandwidth - use "auto" for automatic detection
+  contour_levels: [0.65, 0.95, 0.99]  # Confidence levels for contour plots
+  max_checkpoints: 10              # Maximum checkpoints to keep (None = keep all)
+  generate_plots_after_training: true  # Generate plots after training completes
+  create_animation: false          # Create training progression animation
+```
+
+#### Automatic KDE Bandwidth Detection
+
+The `kde_bandwidth` parameter supports automatic bandwidth selection for KDE visualisations:
+
+- **`"auto"`**: Automatically computes optimal bandwidth using Silverman's rule of thumb
+- **Numeric value**: Use a specific bandwidth (e.g., `0.1`)
+- **Fallback**: Invalid values automatically fall back to auto-detection
+
+**Bandwidth Methods Available:**
+- **Silverman's Rule**: `h = 1.06 * σ * n^(-1/5)` for 1D, geometric mean for multivariate
+- **Scott's Rule**: `h = σ * n^(-1/(d+4))` where d is dimensionality  
+- **IQR Method**: Robust to outliers using `min(std, IQR/1.34)`
+
+```yaml
+tracking:
+  kde_bandwidth: "auto"      # Automatic detection (recommended)
+  # or
+  kde_bandwidth: 0.15        # Manual specification
+```
+
+The automatic detection analyses your sample data characteristics and chooses appropriate bandwidths, eliminating the need for manual tuning while providing optimal visualisation quality.
 
 ## Dependencies
 

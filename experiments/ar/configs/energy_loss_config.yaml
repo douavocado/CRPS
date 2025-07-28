@@ -10,7 +10,7 @@ data:
   noise_cov: null
   noise_scale: 0.15
   output_timesteps: 3
-  random_state: 789
+  random_state: 789  # Will be overridden by seeds
   split_ratios:
     test: 0.1
     train: 0.8
@@ -18,31 +18,34 @@ data:
 experiment:
   evaluate_test: true
   log_interval: 10
-  name: ar_energy_loss
+  name: ar_energy_loss_multi_seed
   save_dir: results
   save_model: true
   save_results: true
+  # Multi-seed experiment configuration
+  seeds: [42, 123, 456, 789, 999]  # Run experiments with these 5 seeds
+  parallel_seeds: false  # Run seeds sequentially
 loss:
-  coefficients:
-    crps_loss_general: 0.0
-    energy_score_loss: 1.0
-    kernel_score_loss: 0.0
-    mmd_loss: 0.0
-    variogram_score_loss: 0.0
-  loss_function_args:
-    crps_loss_general: {}
-    energy_score_loss:
-      norm_dim: false
-    kernel_score_loss:
-      kernel_type: gaussian
-      sigma: 1.0
-    mmd_loss:
-      kernel_type: gaussian
-      sigma: 1.0
-    variogram_score_loss:
-      p: 1.0
-  losses:
-  - energy_score_loss
+  training_loss:
+    loss_instances:
+      - name: energy_score_loss
+        loss_function: energy_score_loss
+        coefficient: 1.0
+        spatial_pooling:
+          enabled: false
+          loss_args:
+            norm_dim: false
+  
+  evaluation_loss:
+    loss_instances:
+      - name: energy_score_loss
+        loss_function: energy_score_loss
+        coefficient: 1.0
+        spatial_pooling:
+          enabled: false
+        loss_args:
+          norm_dim: false
+
 model:
   affine_normal:
     output_dim: null
@@ -59,14 +62,13 @@ model:
     output_size: null
   mlp_sampler:
     activation_function: relu
-    dropout_rate: 0.0
+    dropout_rate: 0.1
     hidden_size:
-    - 32
     - 32
     - 32
     input_size: null
     latent_dim: 2
-    n_layers: 4
+    n_layers: 3
     non_linear: true
     output_size: null
     sample_layer_index: 1
@@ -90,12 +92,14 @@ training:
   patience: 10
   shuffle_train: true
   verbose: true
+  # Autoregressive inference settings
+  use_consistent_ar_noise: false  # If true, each sample trajectory uses the same noise pattern throughout all timesteps
 tracking:
   enabled: true
   track_every: 5
   sample_indices: [23, 24, 25]
   n_samples: 1000
-  kde_bandwidth: 0.1
+  kde_bandwidth: 0.2
   contour_levels: [0.65, 0.95, 0.99]
   max_checkpoints: 10
   generate_plots_after_training: true
